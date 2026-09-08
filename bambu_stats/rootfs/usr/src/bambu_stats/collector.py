@@ -5,6 +5,7 @@ import datetime as dt
 import logging
 import threading
 import time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import aggregates, hms as hmsmod
@@ -144,6 +145,18 @@ class Collector:
                 LOG.exception("resolver filamentu selhal")
         self._stats_dirty = True
         self.publish_stats(force=True)
+        self.export_csv()
+
+    def export_csv(self):
+        """CSV záloha historie do /share/bambu_stats/ (přístupné přes Samba/SSH, součást HA zálohy)."""
+        share = Path("/share/bambu_stats")
+        if not Path("/share").exists():
+            share = self.settings.data_dir / "export"
+        try:
+            n = self.db.export_csv(share / f"history_{self.printer.slug}.csv", self.serial)
+            LOG.debug("CSV export: %d session → %s", n, share)
+        except Exception as e:
+            LOG.warning("CSV export selhal: %s", e)
 
     def _resolve_filament(self, sid: str, final: bool):
         row = self.db.get_session(sid)
@@ -235,6 +248,7 @@ class Collector:
                     n = self.db.purge_samples(now - self.settings.samples_retention_days * 86400)
                     self.db.checkpoint()
                     LOG.info("údržba: smazáno %d vzorků, WAL checkpoint, DB %.1f MB", n, self.db.size_mb())
+                    self.export_csv()
                     self._stats_dirty = True
                 if self.mqtt.connected:
                     self.db.touch_printer(self.serial, ip=self.printer.host)

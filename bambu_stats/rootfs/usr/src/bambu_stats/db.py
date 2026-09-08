@@ -246,6 +246,33 @@ class Database:
                 total += p.stat().st_size
         return round(total / 1_048_576, 2)
 
+    def export_csv(self, path: Path, serial: str | None = None) -> int:
+        """Vypíše uzavřené session (s filamenty per materiál) do CSV – čitelná záloha mimo SQLite."""
+        import csv
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        where = "WHERE ended_ts IS NOT NULL" + (" AND printer_serial=?" if serial else "")
+        rows = self.query(f"SELECT * FROM sessions {where} ORDER BY started_ts", (serial,) if serial else ())
+        cols = ["id", "printer_serial", "subtask_name", "result", "result_confidence", "started", "ended", "duration_min",
+                "active_min", "paused_min", "pause_count", "layers", "filament_g", "filament_m", "filament_source",
+                "filament_is_estimate", "materials", "print_type", "start_source", "end_source", "print_error", "fail_reason"]
+        tmp = path.with_suffix(".tmp")
+        with tmp.open("w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(cols)
+            for r in rows:
+                mats = self.query("SELECT material, used_g FROM session_filaments WHERE session_id=?", (r["id"],))
+                w.writerow([r["id"], r["printer_serial"], r["subtask_name"], r["result"], r["result_confidence"],
+                            time.strftime("%Y-%m-%d %H:%M", time.localtime(r["started_ts"] or 0)),
+                            time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ended_ts"] or 0)),
+                            round((r["duration_s"] or 0) / 60), round((r["active_print_s"] or 0) / 60), round((r["paused_s"] or 0) / 60),
+                            r["pause_count"], f"{r['last_layer']}/{r['total_layers']}", r["filament_g"], r["filament_m"],
+                            r["filament_source"], r["filament_is_estimate"],
+                            "; ".join(f"{m['material']} {m['used_g']} g" for m in mats), r["print_type"], r["start_source"],
+                            r["end_source"], r["print_error"], r["fail_reason"]])
+        tmp.replace(path)
+        return len(rows)
+
     def query(self, sql, params=()):
         with self.lock:
             return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
