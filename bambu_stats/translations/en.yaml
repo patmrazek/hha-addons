@@ -1,0 +1,15 @@
+configuration:
+  printers:
+    name: Printers
+    description: One entry per printer – name, IP/hostname, serial number, access code (Settings → WLAN on the printer). Optional ha-bambulab entities for print weight/length used as a fallback filament source.
+  entity_prefix:
+    name: Entity prefix
+    description: Prefix for generated Home Assistant entities, e.g. bambu_p2s → sensor.bambu_p2s_total_prints.
+  samples_retention_days:
+    name: Telemetry retention (days)
+    description: How long to keep downsampled telemetry samples. Print history is kept forever.
+  log_level:
+    name: Log level
+  tls_verify:
+    name: Printer TLS verification
+    description: tofu = pin the printer certificate on first connection and warn if it changes; none = do not verify.

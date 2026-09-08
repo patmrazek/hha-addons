@@ -1,0 +1,44 @@
+name: Bambu Stats
+version: "0.1.0"
+slug: bambu_stats
+description: Historie tisků, lifetime statistiky a spotřeba filamentu pro tiskárny Bambu Lab (SQLite + MQTT Discovery)
+url: https://github.com/patmrazek/hha-addons
+arch:
+  - aarch64
+  - amd64
+startup: services
+boot: auto
+init: false
+homeassistant_api: true
+hassio_api: true
+services:
+  - mqtt:need
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: Health endpoint (jen pro watchdog, není třeba vystavovat)
+watchdog: http://[HOST]:[PORT:8099]/health
+options:
+  printers:
+    - name: P2S
+      host: ""
+      serial: ""
+      access_code: ""
+      ha_weight_entity: ""
+      ha_length_entity: ""
+  entity_prefix: bambu_p2s
+  samples_retention_days: 90
+  log_level: info
+  tls_verify: tofu
+schema:
+  printers:
+    - name: str
+      host: str
+      serial: str
+      access_code: password
+      ha_weight_entity: str?
+      ha_length_entity: str?
+  entity_prefix: match(^[a-z][a-z0-9_]*$)
+  samples_retention_days: int(7,3650)
+  log_level: list(debug|info|warning|error)
+  tls_verify: list(tofu|none)
