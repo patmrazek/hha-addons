@@ -1,2 +1,2 @@
 """bambu_stats – historie tisků a statistiky pro Bambu Lab v Home Assistantu."""
-__version__ = "0.1.3"
+__version__ = "0.2.0"

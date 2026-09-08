@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0 – 2026-09-09
+- Náklady na filament: options `filament_prices` (cena/kg podle materiálu) a `currency`; entity `total_cost`,
+  `cost_{today,7d,30d}`, `avg_cost_per_print`, `current_cost`; sloupec `cost` v řadách `usage`, `c` v historii.
+
 ## 0.1.3 – 2026-09-09
 - Nová entita `current_filament_g` – odhad zatím spotřebovaného filamentu běžícího tisku (plán × %).
 - Řady pro grafy s volitelným rozsahem: hourly (48 h z telemetrie), daily (365), weekly (104), monthly (vše).

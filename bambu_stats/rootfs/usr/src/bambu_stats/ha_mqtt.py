@@ -30,6 +30,12 @@ COMPONENTS: dict[str, tuple] = {
     "filament_asa_kg": ("Filament ASA", "kg", "weight", "total", "mdi:weight-kilogram", "sensor"),
     "filament_tpu_kg": ("Filament TPU", "kg", "weight", "total", "mdi:weight-kilogram", "sensor"),
     "filament_other_kg": ("Filament ostatní", "kg", "weight", "total", "mdi:weight-kilogram", "sensor"),
+    "total_cost": ("Náklady na filament celkem", "CUR", "monetary", "total", "mdi:cash-multiple", "sensor"),
+    "cost_today": ("Náklady dnes", "CUR", "monetary", None, "mdi:cash", "sensor"),
+    "cost_7d": ("Náklady za 7 dní", "CUR", "monetary", None, "mdi:cash", "sensor"),
+    "cost_30d": ("Náklady za 30 dní", "CUR", "monetary", None, "mdi:cash", "sensor"),
+    "avg_cost_per_print": ("Průměrné náklady na tisk", "CUR", "monetary", None, "mdi:cash", "sensor"),
+    "current_cost": ("Náklady běžícího tisku", "CUR", "monetary", None, "mdi:cash-clock", "sensor"),
     "prints_today": ("Tisky dnes", None, None, "measurement", "mdi:calendar-today", "sensor"),
     "prints_7d": ("Tisky za 7 dní", None, None, "measurement", "mdi:calendar-week", "sensor"),
     "prints_30d": ("Tisky za 30 dní", None, None, "measurement", "mdi:calendar-month", "sensor"),
@@ -56,13 +62,14 @@ COMPONENTS: dict[str, tuple] = {
     "refetch_3mf": ("Znovu načíst 3MF", None, None, None, "mdi:file-refresh", "button"),
 }
 ATTR_KEYS = {"total_filament_kg", "most_used_material", "last_print", "print_history", "usage", "current_session",
-             "current_filament_g", "collector_status"}
+             "current_filament_g", "current_cost", "total_cost", "collector_status"}
 
 
 class HAPublisher:
     def __init__(self, cfg, prefix: str, serial: str, printer_name: str, on_command: Callable[[str], None] | None = None,
-                 slot_keys: list[str] | None = None):
+                 slot_keys: list[str] | None = None, currency: str = "CZK"):
         self.cfg, self.prefix, self.serial, self.printer_name = cfg, prefix, serial, printer_name
+        self.currency = currency
         self.on_command = on_command
         self.base = f"bambu_stats/{serial}"
         self.connected = False
@@ -150,7 +157,7 @@ class HAPublisher:
             else:
                 c.update({"p": "sensor", "state_topic": f"{self.base}/state/{key}"})
                 if unit:
-                    c["unit_of_measurement"] = unit
+                    c["unit_of_measurement"] = self.currency if unit == "CUR" else unit
                 if dclass:
                     c["device_class"] = dclass
                 if sclass:

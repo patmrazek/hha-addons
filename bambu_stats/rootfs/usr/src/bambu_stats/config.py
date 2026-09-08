@@ -50,6 +50,8 @@ class Settings:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     supervisor_token: str = ""
     health_port: int = 8099
+    prices: dict = field(default_factory=dict)   # material_group → cena za kg
+    currency: str = "CZK"
 
     @property
     def db_path(self) -> Path:
@@ -94,4 +96,11 @@ def load() -> Settings:
         username=os.environ.get("MQTT_USERNAME", "") or opts.get("mqtt_username", ""),
         password=os.environ.get("MQTT_PASSWORD", "") or opts.get("mqtt_password", ""))
     s.health_port = int(os.environ.get("HEALTH_PORT", s.health_port))
+    for p in opts.get("filament_prices") or []:
+        try:
+            if p.get("material") and float(p.get("price_per_kg", 0)) > 0:
+                s.prices[str(p["material"]).upper()] = float(p["price_per_kg"])
+        except (TypeError, ValueError):
+            continue
+    s.currency = (opts.get("currency") or s.currency).upper()
     return s

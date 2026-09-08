@@ -19,6 +19,12 @@ configuration:
   printers:
     name: Additional printers (advanced)
     description: Only when one add-on should watch several printers; otherwise leave empty and use the fields above.
+  currency:
+    name: Currency
+    description: ISO code shown on cost entities (CZK, EUR…).
+  filament_prices:
+    name: Filament prices per kg
+    description: Price per kilogram by material group (PLA, PETG, ABS, ASA, TPU, OTHER). Costs = slicer weight × price – an estimate. Set your real spool prices.
   entity_prefix:
     name: Entity prefix
     description: Prefix for generated entities, e.g. bambu_p2s → sensor.bambu_p2s_total_prints.

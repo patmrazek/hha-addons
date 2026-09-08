@@ -39,7 +39,7 @@ class Collector:
         pinfo = db.get_printer(self.serial) or {}
         self.mqtt = PrinterMQTT(printer.host, self.serial, printer.access_code, self.on_state, settings.tls_verify,
                                 pinned_fingerprint=pinfo.get("tls_fingerprint"), on_pin=self._on_pin, on_connection=self._on_conn)
-        self.pub = HAPublisher(settings.mqtt, prefix, self.serial, printer.name, on_command=self.on_command)
+        self.pub = HAPublisher(settings.mqtt, prefix, self.serial, printer.name, on_command=self.on_command, currency=settings.currency)
         self._lock = threading.Lock()
         self._last_progress_write = 0.0
         self._last_stats = 0.0
@@ -211,6 +211,7 @@ class Collector:
         """Odhad zatím spotřebovaného filamentu běžícího tisku = plán (3MF/cloud) × procenta. Vždy odhad."""
         if not session:
             self.pub.publish_value("current_filament_g", 0, {"source": "none", "is_estimate": True, "plan_g": None})
+            self.pub.publish_value("current_cost", 0, {"is_estimate": True})
             return
         row = self.db.get_session(session.id) or {}
         plan = row.get("plan_weight_g") or row.get("cloud_weight_g")
@@ -221,6 +222,11 @@ class Collector:
                  "materials": [{"material": f["material"], "color": f["color_hex"], "slot": f["tray_global"],
                                 "g_so_far": round((f["used_g"] or 0) * pct, 1), "g_plan": f["used_g"]} for f in fils]}
         self.pub.publish_value("current_filament_g", round(plan * pct, 1) if plan else None, attrs)
+        cost = sum((f["used_g"] or 0) * pct / 1000 * aggregates.price_of(self.settings.prices, f["material_group"]) for f in fils)
+        if not fils and plan:
+            cost = plan * pct / 1000 * aggregates.price_of(self.settings.prices, None)
+        self.pub.publish_value("current_cost", round(cost, 1) if plan else None,
+                               {"is_estimate": True, "plan_cost": round(sum((f["used_g"] or 0) / 1000 * aggregates.price_of(self.settings.prices, f["material_group"]) for f in fils), 1) if fils else None})
 
     def _publish_status(self):
         st = self.health()
@@ -230,7 +236,7 @@ class Collector:
         try:
             with self._lock:
                 open_sess = self.sm.session.to_row() if self.sm.session else None
-            stats = aggregates.compute(self.db, self.serial, time.time(), self.tz, open_sess)
+            stats = aggregates.compute(self.db, self.serial, time.time(), self.tz, open_sess, self.settings.prices)
             self.pub.publish_stats(stats, force=force)
             self._last_stats = time.time()
             self._stats_dirty = False

@@ -22,11 +22,24 @@ def _hours(sec) -> float:
     return round((sec or 0) / 3600, 2)
 
 
-def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None = None) -> dict:
+def price_of(prices: dict | None, material_group: str | None) -> float:
+    """Cena za kg pro skupinu materiálu; 'OTHER' nebo 0, když není nastaveno."""
+    if not prices:
+        return 0.0
+    g = (material_group or "other").upper()
+    return float(prices.get(g) or prices.get("OTHER") or 0.0)
+
+
+def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None = None, prices: dict | None = None) -> dict:
     now_i = int(now)
     sessions = db.query("SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL ORDER BY ended_ts", (serial,))
     fil_rows = db.query("""SELECT f.*, s.ended_ts FROM session_filaments f JOIN sessions s ON s.id=f.session_id
                            WHERE s.printer_serial=? AND s.ended_ts IS NOT NULL""", (serial,))
+    for r in fil_rows:
+        r["cost"] = round((r["used_g"] or 0) / 1000 * price_of(prices, r["material_group"]), 2)
+    cost_by_session: dict[str, float] = {}
+    for r in fil_rows:
+        cost_by_session[r["session_id"]] = cost_by_session.get(r["session_id"], 0) + r["cost"]
     known = [s for s in sessions if s["result"] in ("success", "failed", "cancelled")]
     ok = [s for s in known if s["result"] == "success"]
     failed = [s for s in known if s["result"] == "failed"]
@@ -46,6 +59,13 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     total_g = sum(r["used_g"] or 0 for r in fil_rows)
     est_g = sum(r["used_g"] or 0 for r in fil_rows if r["is_estimate"])
     out["total_filament_kg"] = round(total_g / 1000, 3)
+    out["total_cost"] = round(sum(r["cost"] for r in fil_rows), 0)
+    out["prices_set"] = bool(prices)
+    cost_by_mat: dict[str, float] = {}
+    for r in fil_rows:
+        cost_by_mat[r["material_group"] or "other"] = cost_by_mat.get(r["material_group"] or "other", 0) + r["cost"]
+    out["total_cost_attrs"] = {"by_material": {k: round(v) for k, v in cost_by_mat.items()},
+                               "prices_per_kg": prices or {}, "note": "podle nastavených cen za kg (options add-onu), hmotnost = odhad ze sliceru"}
     out["total_filament_attrs"] = {"estimated_share_pct": round(100 * est_g / total_g, 1) if total_g else 0,
                                    "sources": _count_by(fil_rows, "source")}
     by_mat = {g: 0.0 for g in MATERIAL_GROUPS}
@@ -84,6 +104,7 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
         out[f"prints_{label}"] = len(win)
         out[f"hours_{label}"] = _hours(sum(_overlap(s, since, now_i) for s in sessions))
         out[f"filament_{label}_g"] = round(sum(r["used_g"] or 0 for r in fil_rows if r["ended_ts"] >= since), 1)
+        out[f"cost_{label}"] = round(sum(r["cost"] for r in fil_rows if r["ended_ts"] >= since), 0)
     for label, days in (("7d", 7), ("30d", 30)):
         span = days * 86400
         busy = sum(_overlap(s, now_i - span, now_i) for s in sessions)
@@ -97,17 +118,22 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     out["median_print_h"] = _hours(statistics.median(durs)) if durs else 0
     gs = [s["filament_g"] for s in ok if s["filament_g"]]
     out["avg_filament_per_print_g"] = round(statistics.mean(gs), 1) if gs else 0
+    cs = [cost_by_session.get(s["id"], 0) for s in ok]
+    out["avg_cost_per_print"] = round(statistics.mean(cs), 0) if cs else 0
 
     # poslední tisk + historie
     last = sessions[-1] if sessions else None
     out["last_print"] = (last["result"] or "unknown") if last else "none"
     out["last_print_attrs"] = _session_attrs(db, last, tz) if last else {}
+    if last:
+        out["last_print_attrs"]["cost"] = round(cost_by_session.get(last["id"], 0), 1)
     hist = []
     for s in reversed(sessions[-HISTORY_N:]):
         hist.append({"id": s["id"][-8:], "n": (s["subtask_name"] or "?")[:40], "s": _iso(s["started_ts"], tz),
                      "e": _iso(s["ended_ts"], tz), "d": round((s["duration_s"] or 0) / 60), "r": s["result"],
                      "g": round(s["filament_g"], 1) if s["filament_g"] is not None else None,
-                     "m": _materials(db, s["id"]), "src": s["filament_source"], "est": s["filament_is_estimate"]})
+                     "m": _materials(db, s["id"]), "src": s["filament_source"], "est": s["filament_is_estimate"],
+                     "c": round(cost_by_session.get(s["id"], 0))})
     out["print_history"] = len(sessions)
     out["print_history_attrs"] = {"history": hist}
 
@@ -166,7 +192,7 @@ def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz, db=None, se
     hourly.rows = [[printing_min, idle_min, g_est], ...] za každou hodinu (z 10/60 s vzorků).
     """
     def bucket_rows(n):
-        return [[0, 0.0, 0.0, 0, 0] for _ in range(n)]
+        return [[0, 0.0, 0.0, 0, 0, 0.0] for _ in range(n)]
 
     today = _local(now_i, tz).replace(hour=0, minute=0, second=0, microsecond=0)
     daily_start = today - dt.timedelta(days=364)
@@ -184,7 +210,7 @@ def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz, db=None, se
         if mo > 12:
             y, mo = y + 1, 1
         m = m.replace(year=y, month=mo)
-    monthly = {k: [0, 0.0, 0.0, 0, 0] for k in months}
+    monthly = {k: [0, 0.0, 0.0, 0, 0, 0.0] for k in months}
 
     def add(row, prints, hours, g, ok, fail):
         row[0] += prints; row[1] += hours; row[2] += g; row[3] += ok; row[4] += fail
@@ -205,15 +231,19 @@ def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz, db=None, se
     for r in fil_rows:
         end = _local(r["ended_ts"], tz)
         g = r["used_g"] or 0
+        c = r.get("cost", 0)
         di = (end.replace(hour=0, minute=0, second=0, microsecond=0) - daily_start).days
         if 0 <= di < 365:
             daily[di][2] += g
+            daily[di][5] += c
         wi = (end.replace(hour=0, minute=0, second=0, microsecond=0) - week_start).days // 7
         if 0 <= wi < 104:
             weekly[wi][2] += g
+            weekly[wi][5] += c
         mk = end.strftime("%Y-%m")
         if mk in monthly:
             monthly[mk][2] += g
+            monthly[mk][5] += c
 
     hourly = []
     if db is not None and serial:
@@ -231,11 +261,11 @@ def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz, db=None, se
         hourly = [[round(a, 1), round(b, 1)] for a, b in buckets]
 
     def rnd(rows):
-        return [[r[0], round(r[1], 2), round(r[2], 1), r[3], r[4]] for r in rows]
+        return [[r[0], round(r[1], 2), round(r[2], 1), r[3], r[4], round(r[5])] for r in rows]
     return {
         "hourly": {"start": _local(now_i - 48 * 3600, tz).strftime("%Y-%m-%dT%H:00"), "rows": hourly},
         "daily": {"start": daily_start.strftime("%Y-%m-%d"), "rows": rnd(daily)},
         "weekly": {"start": week_start.strftime("%Y-%m-%d"), "rows": rnd(weekly)},
         "monthly": {"keys": months, "rows": rnd(list(monthly.values()))},
-        "cols": ["prints", "hours", "g", "ok", "fail"],
+        "cols": ["prints", "hours", "g", "ok", "fail", "cost"],
     }

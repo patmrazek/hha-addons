@@ -19,6 +19,12 @@ configuration:
   printers:
     name: Další tiskárny (pokročilé)
     description: Jen když má jeden add-on hlídat víc tiskáren; jinak nech prázdné a použij pole výše.
+  currency:
+    name: Měna
+    description: ISO kód u nákladových entit (CZK, EUR…).
+  filament_prices:
+    name: Ceny filamentu za kg
+    description: Cena za kilogram podle skupiny materiálu (PLA, PETG, ABS, ASA, TPU, OTHER). Náklady = hmotnost ze sliceru × cena – odhad. Nastav skutečné ceny svých cívek.
   entity_prefix:
     name: Prefix entit
     description: Prefix generovaných entit, např. bambu_p2s → sensor.bambu_p2s_total_prints.

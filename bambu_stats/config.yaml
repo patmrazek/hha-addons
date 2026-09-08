@@ -1,5 +1,5 @@
 name: Bambu Stats
-version: "0.1.3"
+version: "0.2.0"
 slug: bambu_stats
 description: Historie tisků, lifetime statistiky a spotřeba filamentu pro tiskárny Bambu Lab (SQLite + MQTT Discovery)
 url: https://github.com/patmrazek/hha-addons
@@ -28,6 +28,20 @@ options:
   ha_weight_entity: sensor.p2s_print_weight
   ha_length_entity: sensor.p2s_print_length
   entity_prefix: bambu_p2s
+  currency: CZK
+  filament_prices:
+    - material: PLA
+      price_per_kg: 599
+    - material: PETG
+      price_per_kg: 649
+    - material: ABS
+      price_per_kg: 699
+    - material: ASA
+      price_per_kg: 799
+    - material: TPU
+      price_per_kg: 899
+    - material: OTHER
+      price_per_kg: 700
   samples_retention_days: 90
   log_level: info
   tls_verify: tofu
@@ -46,6 +60,10 @@ schema:
       ha_weight_entity: str?
       ha_length_entity: str?
   entity_prefix: match(^[a-z][a-z0-9_]*$)
+  currency: str
+  filament_prices:
+    - material: str
+      price_per_kg: float(0,)
   samples_retention_days: int(7,3650)
   log_level: list(debug|info|warning|error)
   tls_verify: list(tofu|none)
