@@ -50,12 +50,13 @@ COMPONENTS: dict[str, tuple] = {
     "print_history": ("Historie tisků", None, None, None, "mdi:table", "text"),
     "usage": ("Využití v čase", None, None, None, "mdi:chart-bar", "text"),
     "current_session": ("Aktuální session", None, None, None, "mdi:progress-clock", "text"),
+    "current_filament_g": ("Filament běžícího tisku", "g", "weight", "measurement", "mdi:weight-gram", "sensor"),
     "collector_status": ("Stav collectoru", None, None, None, "mdi:heart-pulse", "diag"),
     "recompute": ("Přepočítat statistiky", None, None, None, "mdi:refresh", "button"),
     "refetch_3mf": ("Znovu načíst 3MF", None, None, None, "mdi:file-refresh", "button"),
 }
 ATTR_KEYS = {"total_filament_kg", "most_used_material", "last_print", "print_history", "usage", "current_session",
-             "collector_status"}
+             "current_filament_g", "collector_status"}
 
 
 class HAPublisher:

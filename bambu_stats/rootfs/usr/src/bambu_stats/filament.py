@@ -121,10 +121,32 @@ class FilamentResolver:
         }
 
     # --- hlavní ------------------------------------------------------------------------
+    def fix_start_from_cloud(self, session: dict) -> int | None:
+        """Pokud je začátek session jen odhad, zkusí přesný čas z ha-bambulab (`*_start_time`, z Bambu cloudu)."""
+        if session.get("start_source") not in ("estimated_pct", "observed") or not session.get("incomplete"):
+            return None
+        ent = (self.printer.ha_weight_entity or "").replace("_print_weight", "_start_time")
+        if not ent or ent == self.printer.ha_weight_entity:
+            return None
+        st = self.ha.state(ent)
+        if not st or st.get("state") in (None, "unknown", "unavailable"):
+            return None
+        try:
+            import datetime as dt
+            ts = int(dt.datetime.fromisoformat(st["state"].replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
+        if abs(ts - (session.get("started_ts") or 0)) > 6 * 3600:
+            return None  # patří jinému tisku
+        self.db.update_session(session["id"], started_ts=ts, print_started_ts=ts, start_source="cloud_ha")
+        LOG.info("začátek session %s upřesněn z cloudu: %s", session["id"][-8:], st["state"])
+        return ts
+
     def resolve(self, session: dict, final: bool) -> dict | None:
         """Spočítá a uloží spotřebu. Vrátí shrnutí (g, m, source, is_estimate) nebo None."""
         if session.get("manual_override"):
             return None
+        self.fix_start_from_cloud(session)
         trays_start = _trays(session, "trays_start")
         result = session.get("result")
         finished_ok = final and result == "success"

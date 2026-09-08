@@ -112,7 +112,7 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     out["print_history_attrs"] = {"history": hist}
 
     # denní / měsíční řady pro grafy
-    out["usage_attrs"] = _series(known, fil_rows, now_i, tz)
+    out["usage_attrs"] = _series(known, fil_rows, now_i, tz, db, serial)
     out["usage"] = out["prints_30d"]
     return out
 
@@ -158,33 +158,84 @@ def _session_attrs(db, s: dict, tz) -> dict:
     }
 
 
-def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz) -> dict:
-    days: dict[str, dict] = {}
-    months: dict[str, dict] = {}
-    for i in range(30):
-        d = (_local(now_i, tz) - dt.timedelta(days=i)).strftime("%Y-%m-%d")
-        days[d] = {"d": d, "prints": 0, "hours": 0.0, "g": 0.0}
-    for i in range(12):
-        m0 = _local(now_i, tz).replace(day=1)
-        y, m = m0.year, m0.month - i
-        while m <= 0:
-            y, m = y - 1, m + 12
-        months[f"{y}-{m:02d}"] = {"m": f"{y}-{m:02d}", "prints": 0, "hours": 0.0, "g": 0.0}
+def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz, db=None, serial: str | None = None) -> dict:
+    """Kompaktní řady pro grafy: hourly (48 h, z telemetrie), daily (365), weekly (104), monthly (vše).
+
+    Formát: {"daily": {"start": "2025-09-10", "rows": [[prints, hours, g, ok, fail], ...]}} – pole místo objektů,
+    aby se 365 dní vešlo pod 16 kB limit atributů HA. hours = wall-clock hodiny tisku připsané do dne konce tisku.
+    hourly.rows = [[printing_min, idle_min, g_est], ...] za každou hodinu (z 10/60 s vzorků).
+    """
+    def bucket_rows(n):
+        return [[0, 0.0, 0.0, 0, 0] for _ in range(n)]
+
+    today = _local(now_i, tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    daily_start = today - dt.timedelta(days=364)
+    daily = bucket_rows(365)
+    week_start = (today - dt.timedelta(days=today.weekday())) - dt.timedelta(weeks=103)
+    weekly = bucket_rows(104)
+    first_month = None
+    if known:
+        first_month = _local(min(s["ended_ts"] for s in known), tz).replace(day=1)
+    months: list[str] = []
+    m = (first_month or today.replace(day=1))
+    while m <= today.replace(day=1):
+        months.append(m.strftime("%Y-%m"))
+        y, mo = m.year, m.month + 1
+        if mo > 12:
+            y, mo = y + 1, 1
+        m = m.replace(year=y, month=mo)
+    monthly = {k: [0, 0.0, 0.0, 0, 0] for k in months}
+
+    def add(row, prints, hours, g, ok, fail):
+        row[0] += prints; row[1] += hours; row[2] += g; row[3] += ok; row[4] += fail
+
     for s in known:
-        key = _local(s["ended_ts"], tz).strftime("%Y-%m-%d")
-        mk = key[:7]
-        if key in days:
-            days[key]["prints"] += 1
-            days[key]["hours"] += (s["duration_s"] or 0) / 3600
-        if mk in months:
-            months[mk]["prints"] += 1
-            months[mk]["hours"] += (s["duration_s"] or 0) / 3600
+        end = _local(s["ended_ts"], tz)
+        hours = (s["duration_s"] or 0) / 3600
+        ok, fail = int(s["result"] == "success"), int(s["result"] in ("failed", "cancelled"))
+        di = (end.replace(hour=0, minute=0, second=0, microsecond=0) - daily_start).days
+        if 0 <= di < 365:
+            add(daily[di], 1, hours, 0, ok, fail)
+        wi = (end.replace(hour=0, minute=0, second=0, microsecond=0) - week_start).days // 7
+        if 0 <= wi < 104:
+            add(weekly[wi], 1, hours, 0, ok, fail)
+        mk = end.strftime("%Y-%m")
+        if mk in monthly:
+            add(monthly[mk], 1, hours, 0, ok, fail)
     for r in fil_rows:
-        key = _local(r["ended_ts"], tz).strftime("%Y-%m-%d")
-        if key in days:
-            days[key]["g"] += r["used_g"] or 0
-        if key[:7] in months:
-            months[key[:7]]["g"] += r["used_g"] or 0
-    daily = [{**v, "hours": round(v["hours"], 2), "g": round(v["g"], 1)} for v in sorted(days.values(), key=lambda x: x["d"])]
-    monthly = [{**v, "hours": round(v["hours"], 1), "g": round(v["g"])} for v in sorted(months.values(), key=lambda x: x["m"])]
-    return {"daily": daily, "monthly": monthly}
+        end = _local(r["ended_ts"], tz)
+        g = r["used_g"] or 0
+        di = (end.replace(hour=0, minute=0, second=0, microsecond=0) - daily_start).days
+        if 0 <= di < 365:
+            daily[di][2] += g
+        wi = (end.replace(hour=0, minute=0, second=0, microsecond=0) - week_start).days // 7
+        if 0 <= wi < 104:
+            weekly[wi][2] += g
+        mk = end.strftime("%Y-%m")
+        if mk in monthly:
+            monthly[mk][2] += g
+
+    hourly = []
+    if db is not None and serial:
+        h0 = now_i - 48 * 3600
+        samples = db.query("SELECT ts, gcode_state FROM samples WHERE printer_serial=? AND ts>=? ORDER BY ts", (serial, h0))
+        buckets = [[0.0, 0.0] for _ in range(48)]
+        prev = None
+        for smp in samples:
+            if prev is not None:
+                span = min(smp["ts"] - prev["ts"], 120)
+                idx = int((prev["ts"] - h0) // 3600)
+                if 0 <= idx < 48:
+                    buckets[idx][0 if prev["gcode_state"] in ("RUNNING", "PAUSE", "PREPARE") else 1] += span / 60
+            prev = smp
+        hourly = [[round(a, 1), round(b, 1)] for a, b in buckets]
+
+    def rnd(rows):
+        return [[r[0], round(r[1], 2), round(r[2], 1), r[3], r[4]] for r in rows]
+    return {
+        "hourly": {"start": _local(now_i - 48 * 3600, tz).strftime("%Y-%m-%dT%H:00"), "rows": hourly},
+        "daily": {"start": daily_start.strftime("%Y-%m-%d"), "rows": rnd(daily)},
+        "weekly": {"start": week_start.strftime("%Y-%m-%d"), "rows": rnd(weekly)},
+        "monthly": {"keys": months, "rows": rnd(list(monthly.values()))},
+        "cols": ["prints", "hours", "g", "ok", "fail"],
+    }

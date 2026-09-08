@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 – 2026-09-09
+- Nová entita `current_filament_g` – odhad zatím spotřebovaného filamentu běžícího tisku (plán × %).
+- Řady pro grafy s volitelným rozsahem: hourly (48 h z telemetrie), daily (365), weekly (104), monthly (vše).
+- Začátek session obnovené odhadem se upřesní z ha-bambulab `*_start_time` (Bambu cloud).
+
 ## 0.1.2 – 2026-09-08
 - Nastavení: plochá pole pro jednu tiskárnu (printer_host, printer_serial, access_code…). Seznam `printers` v UI
   add-onu ztrácel hodnoty; zůstává jen jako pokročilá volba pro více tiskáren.

@@ -163,6 +163,15 @@ class Collector:
         if row and row.get("ended_ts") is None:
             try:
                 self.filament.resolve(row, final=final)
+                fresh = self.db.get_session(sid) or {}
+                with self._lock:
+                    sess = self.sm.session
+                    if sess and sess.id == sid and fresh.get("started_ts") and fresh.get("start_source") == "cloud_ha":
+                        sess.started_ts = fresh["started_ts"]
+                        sess.print_started_ts = fresh.get("print_started_ts") or sess.print_started_ts
+                        sess.start_source = "cloud_ha"
+                        self._last_current = None
+                self._publish_current_filament(self.sm.session)
             except Exception:
                 LOG.exception("resolver filamentu selhal")
 
@@ -196,6 +205,22 @@ class Collector:
         if key != self._last_current:
             self._last_current = key
             self.pub.publish_value("current_session", state, attrs)
+            self._publish_current_filament(session)
+
+    def _publish_current_filament(self, session):
+        """Odhad zatím spotřebovaného filamentu běžícího tisku = plán (3MF/cloud) × procenta. Vždy odhad."""
+        if not session:
+            self.pub.publish_value("current_filament_g", 0, {"source": "none", "is_estimate": True, "plan_g": None})
+            return
+        row = self.db.get_session(session.id) or {}
+        plan = row.get("plan_weight_g") or row.get("cloud_weight_g")
+        src = "3mf" if row.get("threemf_status") == "ok" else ("cloud_ha" if row.get("cloud_weight_g") else "none")
+        fils = self.db.filaments(session.id)
+        pct = max(0, min(100, session.last_percent)) / 100
+        attrs = {"source": src, "is_estimate": True, "plan_g": round(plan, 1) if plan else None, "percent": session.last_percent,
+                 "materials": [{"material": f["material"], "color": f["color_hex"], "slot": f["tray_global"],
+                                "g_so_far": round((f["used_g"] or 0) * pct, 1), "g_plan": f["used_g"]} for f in fils]}
+        self.pub.publish_value("current_filament_g", round(plan * pct, 1) if plan else None, attrs)
 
     def _publish_status(self):
         st = self.health()
