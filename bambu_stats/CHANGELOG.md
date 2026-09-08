@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.1 – 2026-09-09
+- Nákladové entity mají jednotku jako symbol měny (Kč) místo ISO kódu.
+
 ## 0.2.0 – 2026-09-09
 - Náklady na filament: options `filament_prices` (cena/kg podle materiálu) a `currency`; entity `total_cost`,
   `cost_{today,7d,30d}`, `avg_cost_per_print`, `current_cost`; sloupec `cost` v řadách `usage`, `c` v historii.

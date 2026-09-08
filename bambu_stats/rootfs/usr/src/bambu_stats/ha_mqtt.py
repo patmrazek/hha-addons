@@ -61,6 +61,7 @@ COMPONENTS: dict[str, tuple] = {
     "recompute": ("Přepočítat statistiky", None, None, None, "mdi:refresh", "button"),
     "refetch_3mf": ("Znovu načíst 3MF", None, None, None, "mdi:file-refresh", "button"),
 }
+CURRENCY_SYMBOLS = {"CZK": "Kč", "EUR": "€", "USD": "$", "GBP": "£", "PLN": "zł"}
 ATTR_KEYS = {"total_filament_kg", "most_used_material", "last_print", "print_history", "usage", "current_session",
              "current_filament_g", "current_cost", "total_cost", "collector_status"}
 
@@ -157,8 +158,8 @@ class HAPublisher:
             else:
                 c.update({"p": "sensor", "state_topic": f"{self.base}/state/{key}"})
                 if unit:
-                    c["unit_of_measurement"] = self.currency if unit == "CUR" else unit
-                if dclass:
+                    c["unit_of_measurement"] = CURRENCY_SYMBOLS.get(self.currency, self.currency) if unit == "CUR" else unit
+                if dclass and dclass != "monetary":   # monetary vynucuje ISO kód a formát „CZK 7.40" – chceme „7 Kč"
                     c["device_class"] = dclass
                 if sclass:
                     c["state_class"] = sclass
