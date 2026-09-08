@@ -65,7 +65,13 @@ def load() -> Settings:
     opts = {}
     if opts_path.exists():
         opts = json.loads(opts_path.read_text())
-    for p in opts.get("printers", []):
+    # jednoduchá varianta (jedna tiskárna, plochá pole – v UI add-onu spolehlivější než seznam)
+    if opts.get("printer_host") and opts.get("printer_serial") and opts.get("access_code"):
+        s.printers.append(PrinterConfig(
+            name=opts.get("printer_name") or "Bambu", host=opts["printer_host"], serial=opts["printer_serial"],
+            access_code=opts["access_code"], ha_weight_entity=opts.get("ha_weight_entity") or "",
+            ha_length_entity=opts.get("ha_length_entity") or ""))
+    for p in opts.get("printers") or []:
         if p.get("host") and p.get("serial") and p.get("access_code"):
             s.printers.append(PrinterConfig(
                 name=p.get("name") or "Bambu", host=p["host"], serial=p["serial"], access_code=p["access_code"],
