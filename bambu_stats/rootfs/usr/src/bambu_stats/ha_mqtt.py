@@ -140,7 +140,9 @@ class HAPublisher:
         cmps = {}
         for key, (name, unit, dclass, sclass, icon, kind) in COMPONENTS.items():
             uid = f"bambu_stats_{self.serial}_{key}"
-            c = {"name": name, "unique_id": uid, "object_id": f"{self.prefix}_{key}", "icon": icon,
+            platform = "button" if kind == "button" else "sensor"
+            # HA 2026: entity ID se řídí `default_entity_id` (dřívější `object_id` bylo odstraněno)
+            c = {"name": name, "unique_id": uid, "default_entity_id": f"{platform}.{self.prefix}_{key}", "icon": icon,
                  "availability_topic": f"{self.base}/availability"}
             if kind == "button":
                 c.update({"p": "button", "command_topic": f"{self.base}/cmd", "payload_press": key, "entity_category": "diagnostic"})
@@ -161,7 +163,7 @@ class HAPublisher:
             key = f"filament_{sk}_kg"
             label = "externí cívka" if sk == "ext" else ("nezařazeno" if sk == "unmapped" else sk.replace("ams", "AMS ").replace("_slot", " slot "))
             cmps[key] = {"p": "sensor", "name": f"Filament {label}", "unique_id": f"bambu_stats_{self.serial}_{key}",
-                         "object_id": f"{self.prefix}_{key}", "icon": "mdi:weight-kilogram", "unit_of_measurement": "kg",
+                         "default_entity_id": f"sensor.{self.prefix}_{key}", "icon": "mdi:weight-kilogram", "unit_of_measurement": "kg",
                          "device_class": "weight", "state_class": "total", "state_topic": f"{self.base}/state/{key}",
                          "json_attributes_topic": f"{self.base}/attr/{key}", "availability_topic": f"{self.base}/availability"}
         payload = {"dev": dev, "o": origin, "cmps": cmps}
