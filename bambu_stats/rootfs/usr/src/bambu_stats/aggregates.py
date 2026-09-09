@@ -36,7 +36,8 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     fil_rows = db.query("""SELECT f.*, s.ended_ts FROM session_filaments f JOIN sessions s ON s.id=f.session_id
                            WHERE s.printer_serial=? AND s.ended_ts IS NOT NULL""", (serial,))
     for r in fil_rows:
-        r["cost"] = round((r["used_g"] or 0) / 1000 * price_of(prices, r["material_group"]), 2)
+        per_kg = r.get("spool_price_per_kg") or price_of(prices, r["material_group"])
+        r["cost"] = round((r["used_g"] or 0) / 1000 * per_kg, 2)
     cost_by_session: dict[str, float] = {}
     for r in fil_rows:
         cost_by_session[r["session_id"]] = cost_by_session.get(r["session_id"], 0) + r["cost"]

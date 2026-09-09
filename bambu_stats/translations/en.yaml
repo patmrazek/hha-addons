@@ -39,6 +39,9 @@ configuration:
     description: Unique per location, e.g. hacienda / podharfou.
   sync_interval_min:
     name: Sync interval (min)
+  spoolman_url:
+    name: Spoolman URL
+    description: e.g. http://192.168.0.10:7912. Spools assigned to AMS trays (SpoolmanSync extra.active_tray) get their usage deducted after each print and their real price is used for costs.
   samples_retention_days:
     name: Telemetry retention (days)
   log_level:

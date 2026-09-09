@@ -39,6 +39,9 @@ configuration:
     description: Unikátní per lokalita, např. hacienda / podharfou.
   sync_interval_min:
     name: Interval synchronizace (min)
+  spoolman_url:
+    name: URL Spoolmanu
+    description: např. http://192.168.0.10:7912. Cívkám přiřazeným k AMS slotům (SpoolmanSync extra.active_tray) se po tisku odečte spotřeba a jejich skutečná cena se použije pro náklady.
   samples_retention_days:
     name: Retence telemetrie (dny)
   log_level:

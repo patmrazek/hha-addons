@@ -16,6 +16,7 @@ from .ha_api import HomeAssistant
 from .ha_mqtt import HAPublisher
 from .printer_mqtt import PrinterMQTT
 from .sampler import Sampler
+from .spoolman import Spoolman
 from .sync import GitSync
 from .state_machine import Event, Snapshot, StateMachine
 
@@ -30,7 +31,8 @@ class Collector:
         self.settings, self.printer, self.db, self.tz = settings, printer, db, tz
         self.serial = printer.serial
         self.ha = HomeAssistant(settings.supervisor_token)
-        self.filament = FilamentResolver(db, printer, self.ha, settings.data_dir / "3mf_cache")
+        self.spoolman = Spoolman(settings.spoolman_url) if settings.spoolman_url else None
+        self.filament = FilamentResolver(db, printer, self.ha, settings.data_dir / "3mf_cache", spoolman=self.spoolman)
         self.sampler = Sampler(self.serial)
         open_row = db.open_session_for(self.serial)
         last = db.last_closed_session(self.serial)
@@ -77,6 +79,34 @@ class Collector:
         if cmd == "recompute":
             self._stats_dirty = True
             self.publish_stats(force=True)
+        elif cmd.startswith("assign_slot:"):
+            # assign_slot:<konec_id_session>:<tray_global> - rucne doplnit slot u tisku, kde tiskarna slot neposlala
+            try:
+                _, sid_suffix, tray = cmd.split(":")
+                row = next((r for r in self.db.query("SELECT * FROM sessions WHERE id LIKE ?", (f"%{sid_suffix}",))), None)
+                if row:
+                    self.db.update_session(row["id"], tray_now_start=int(tray))
+                    row = self.db.get_session(row["id"])
+                    self.filament.resolve(row, final=row.get("ended_ts") is not None)
+                    self._stats_dirty = True
+                    self.publish_stats(force=True)
+                    LOG.info("session %s: slot nastaven na %s a prepocitan", row["id"][-8:], tray)
+            except Exception:
+                LOG.exception("assign_slot selhal")
+        elif cmd.startswith("set_plan:"):
+            # set_plan:<konec_id_session>:<gramy>[:<metry>] - rucne opravit planovanou hmotnost (napr. po prepsani cloud hodnotou)
+            try:
+                parts = cmd.split(":"); sid_suffix, grams = parts[1], float(parts[2]); metres = float(parts[3]) if len(parts) > 3 else None
+                row = next((r for r in self.db.query("SELECT * FROM sessions WHERE id LIKE ?", (f"%{sid_suffix}",))), None)
+                if row:
+                    self.db.update_session(row["id"], cloud_weight_g=grams, cloud_length_m=metres, plan_weight_g=grams, plan_length_m=metres)
+                    row = self.db.get_session(row["id"])
+                    self.filament.resolve(row, final=row.get("ended_ts") is not None)
+                    self._stats_dirty = True
+                    self.publish_stats(force=True)
+                    LOG.info("session %s: plan nastaven na %.1f g a prepocitan", row["id"][-8:], grams)
+            except Exception:
+                LOG.exception("set_plan selhal")
         elif cmd == "refetch_3mf":
             with self._lock:
                 sess = self.sm.session
@@ -238,7 +268,7 @@ class Collector:
                  "materials": [{"material": f["material"], "color": f["color_hex"], "slot": f["tray_global"],
                                 "g_so_far": round((f["used_g"] or 0) * pct, 1), "g_plan": f["used_g"]} for f in fils]}
         self.pub.publish_value("current_filament_g", round(plan * pct, 1) if plan else None, attrs)
-        cost = sum((f["used_g"] or 0) * pct / 1000 * aggregates.price_of(self.settings.prices, f["material_group"]) for f in fils)
+        cost = sum((f["used_g"] or 0) * pct / 1000 * (f.get("spool_price_per_kg") or aggregates.price_of(self.settings.prices, f["material_group"])) for f in fils)
         if not fils and plan:
             cost = plan * pct / 1000 * aggregates.price_of(self.settings.prices, None)
         self.pub.publish_value("current_cost", round(cost, 1) if plan else None,

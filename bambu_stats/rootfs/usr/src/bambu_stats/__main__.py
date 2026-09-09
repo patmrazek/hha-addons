@@ -22,7 +22,7 @@ def main() -> int:
     log.setup(settings.log_level)
     for p in settings.printers:
         log.REDACT.add(p.access_code)
-    log.REDACT.add(settings.supervisor_token, settings.mqtt.password)
+    log.REDACT.add(settings.supervisor_token, settings.mqtt.password, settings.sync_token)
     LOG.info("bambu_stats %s startuje, %d tiskáren, data %s", __version__, len(settings.printers), settings.data_dir)
     if not settings.printers:
         LOG.error("Není nakonfigurována žádná tiskárna (options → printers). Čekám, nic nedělám.")

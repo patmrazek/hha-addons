@@ -34,8 +34,8 @@ def _trays(session: dict, key: str) -> list[dict]:
 
 
 class FilamentResolver:
-    def __init__(self, db, printer, ha, cache_dir: Path):
-        self.db, self.printer, self.ha = db, printer, ha
+    def __init__(self, db, printer, ha, cache_dir: Path, spoolman=None):
+        self.db, self.printer, self.ha, self.spoolman = db, printer, ha, spoolman
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._attempts: dict[str, int] = {}
@@ -175,7 +175,8 @@ class FilamentResolver:
                                    predicted_source="3mf" if plate.prediction_s else session.get("predicted_source"))
             source, is_est = ("3mf", 0) if finished_ok else ("estimate", 1)
         else:
-            w, l = self._from_cloud(session)
+            # živou cloud hodnotu číst jen u otevřené session – po uzavření už entita patří dalšímu tisku
+            w, l = (None, None) if (session.get("ended_ts") and session.get("cloud_weight_g")) else self._from_cloud(session)
             if w:
                 self.db.update_session(session["id"], cloud_weight_g=w, cloud_length_m=l, plan_weight_g=w, plan_length_m=l)
             else:
@@ -193,6 +194,22 @@ class FilamentResolver:
             if remain_rows and (not rows or (result != "success" and remain_total >= 20)):
                 rows, source, is_est = remain_rows, "ams_remain", 1
 
+        # Spoolman: cívka podle slotu → cena cívky, odečet (jen rozdíl proti už odečtenému, přežije opakovaný resolve)
+        previous = {r["tray_global"]: r for r in self.db.filaments(session["id"]) if r.get("tray_global") is not None}
+        trays_by_global = {t["tray_global"]: t for t in trays_start}
+        for r in rows:
+            prev = previous.get(r["tray_global"]) or {}
+            r["spool_deducted_g"] = prev.get("spool_deducted_g") or 0
+            r["spool_id"], r["spool_price_per_kg"] = prev.get("spool_id"), prev.get("spool_price_per_kg")
+            if self.spoolman and self.spoolman.enabled and r["tray_global"] is not None:
+                tag = (trays_by_global.get(r["tray_global"]) or {}).get("tray_uuid") or ""
+                sp = self.spoolman.spool_for_tray(r["tray_global"], tag)
+                if sp:
+                    r["spool_id"] = sp["id"]
+                    r["spool_price_per_kg"] = self.spoolman.price_per_kg(sp)
+                    if final and (r["used_g"] or 0) > r["spool_deducted_g"] + 0.05:
+                        if self.spoolman.use(sp["id"], r["used_g"] - r["spool_deducted_g"]):
+                            r["spool_deducted_g"] = r["used_g"]
         if rows:
             total_g = round(sum(r["used_g"] or 0 for r in rows), 2)
             ms = [r["used_m"] for r in rows if r["used_m"] is not None]

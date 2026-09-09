@@ -401,6 +401,9 @@ class StateMachine:
         sess.updated_ts = int(s.ts)
         if s.spd_lvl:
             sess.spd_lvl = s.spd_lvl
+        if s.gcode_state in GS_RUNNING and s.tray_now != 255 and (sess.tray_now_start in (None, 255)):
+            sess.tray_now_start = s.tray_now
+            sess.trays_start = [t.as_dict() for t in s.trays] or sess.trays_start
         if not sess.subtask_name and s.subtask_name:
             self._copy_ids(s)
         if sess.predicted_s is None and s.remaining_min > 0 and sess.status == "running":

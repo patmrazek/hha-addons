@@ -1,5 +1,5 @@
 name: Bambu Stats
-version: "0.3.1"
+version: "0.4.1"
 slug: bambu_stats
 description: Historie tisků, lifetime statistiky a spotřeba filamentu pro tiskárny Bambu Lab (SQLite + MQTT Discovery)
 url: https://github.com/patmrazek/hha-addons
@@ -47,6 +47,7 @@ options:
   sync_token: ""
   sync_instance: ""
   sync_interval_min: 10
+  spoolman_url: ""
   samples_retention_days: 90
   log_level: info
   tls_verify: tofu
@@ -73,6 +74,7 @@ schema:
   sync_token: password?
   sync_instance: str?
   sync_interval_min: int(1,1440)?
+  spoolman_url: str?
   samples_retention_days: int(7,3650)
   log_level: list(debug|info|warning|error)
   tls_verify: list(tofu|none)

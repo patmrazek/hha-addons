@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 - 2026-09-09
+- Oprava: u uzavrene session se uz necte ziva cloud hmotnost (patri dalsimu tisku). Prikaz set_plan:<konec_id>:<g>[:<m>].
+
+## 0.4.0 - 2026-09-09
+- Spoolman: odecet spotreby z civky prirazene ke slotu (SpoolmanSync extra.active_tray / RFID extra.tag), cena tisku
+  ze skutecne ceny civky; option spoolman_url. Sloupce spool_id, spool_price_per_kg, spool_deducted_g.
+- Slot filamentu se zachyti pri prechodu do RUNNING (v PREPARE byva 255 -> material 'ostatni'). Prikaz
+  assign_slot:<konec_id>:<tray_global> pro rucni doplneni.
+
 ## 0.3.1 – 2026-09-09
 - Výchozí options obsahují `printers: []` (Supervisor jinak hlásí chybějící klíč).
 

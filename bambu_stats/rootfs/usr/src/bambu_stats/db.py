@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 LOG = logging.getLogger("db")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS session_filaments(
   filament_idx INTEGER, ams_id INTEGER, tray_id INTEGER, tray_global INTEGER,
   tray_info_idx TEXT, material TEXT, material_group TEXT, brand TEXT, color_hex TEXT,
   used_g REAL, used_m REAL, source TEXT, is_estimate INTEGER DEFAULT 0, mapping_source TEXT,
-  remain_start INTEGER, remain_end INTEGER, tray_weight INTEGER);
+  remain_start INTEGER, remain_end INTEGER, tray_weight INTEGER,
+  spool_id INTEGER, spool_price_per_kg REAL, spool_deducted_g REAL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS sf_session ON session_filaments(session_id);
 CREATE TABLE IF NOT EXISTS session_pauses(
   id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -93,6 +94,10 @@ class Database:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN origin TEXT")
         if "synced_ts" not in cols:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN synced_ts INTEGER")
+        fcols = {r[1] for r in self.conn.execute("PRAGMA table_info(session_filaments)")}
+        for col, typ in (("spool_id", "INTEGER"), ("spool_price_per_kg", "REAL"), ("spool_deducted_g", "REAL DEFAULT 0")):
+            if col not in fcols:
+                self.conn.execute(f"ALTER TABLE session_filaments ADD COLUMN {col} {typ}")
         if v < SCHEMA_VERSION:
             self.set_meta("schema_version", str(SCHEMA_VERSION))
 
