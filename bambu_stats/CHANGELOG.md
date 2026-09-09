@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.1 – 2026-09-09
+- Výchozí options obsahují `printers: []` (Supervisor jinak hlásí chybějící klíč).
+
 ## 0.3.0 – 2026-09-09
 - Synchronizace historie mezi lokalitami přes sdílený privátní git repozitář (`sync_repo`, `sync_token`, `sync_instance`).
   Sloupce `origin`/`synced_ts` v sessions, `git` v image.
