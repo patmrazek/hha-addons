@@ -252,6 +252,10 @@ class Collector:
             self._last_current = key
             self.pub.publish_value("current_session", state, attrs)
             self._publish_current_filament(session)
+        tray_key = (snap.tray_now, tuple((t.tray_global, t.tray_type, t.color, t.remain) for t in snap.trays))
+        if tray_key != getattr(self, "_last_tray_key", None):
+            self._last_tray_key = tray_key
+            threading.Thread(target=self.publish_slots, daemon=True).start()
 
     def _publish_current_filament(self, session):
         """Odhad zatím spotřebovaného filamentu běžícího tisku = plán (3MF/cloud) × procenta. Vždy odhad."""
@@ -273,6 +277,39 @@ class Collector:
             cost = plan * pct / 1000 * aggregates.price_of(self.settings.prices, None)
         self.pub.publish_value("current_cost", round(cost, 1) if plan else None,
                                {"is_estimate": True, "plan_cost": round(sum((f["used_g"] or 0) / 1000 * aggregates.price_of(self.settings.prices, f["material_group"]) for f in fils), 1) if fils else None})
+
+    def publish_slots(self):
+        """Co je v AMS slotech: cívka ze Spoolmanu (název, barva, zbývá, cena), fallback = údaje z tiskárny."""
+        with self._lock:
+            snap = self._last_snapshot
+        trays = {t.tray_global: t for t in (snap.trays if snap else [])}
+        spools = self.spoolman.spools() if self.spoolman else []
+        import re as _re
+        for slot in range(1, 5):
+            tg = slot - 1
+            tray = trays.get(tg)
+            sp = None
+            for cand in spools:
+                at = (cand.get("extra") or {}).get("active_tray") or ""
+                tag = ((cand.get("extra") or {}).get("tag") or "").strip('"').upper()
+                if _re.search(rf'_tray_{slot}"?$', at) or (tray and tray.tray_uuid and tray.tray_uuid.strip("0") and tag == tray.tray_uuid.upper()):
+                    sp = cand
+                    break
+            if sp:
+                fil = sp.get("filament") or {}
+                vendor = (fil.get("vendor") or {}).get("name") or ""
+                state = f"{vendor} {fil.get('name') or ''}".strip()[:255]
+                attrs = {"source": "spoolman", "spool_id": sp["id"], "material": fil.get("material"), "color": ("#" + fil["color_hex"]) if fil.get("color_hex") else (tray.color if tray else None),
+                         "remaining_g": round(sp.get("remaining_weight") or 0), "used_g": round(sp.get("used_weight") or 0),
+                         "price_per_kg": self.spoolman.price_per_kg(sp), "location": sp.get("location"), "comment": sp.get("comment"),
+                         "active": bool(snap and snap.tray_now == tg), "printer_type": tray.tray_type if tray else None}
+            elif tray and tray.tray_type:
+                state = f"{tray.sub_brands or ''} {tray.tray_type}".strip()
+                attrs = {"source": "printer", "material": tray.tray_type, "color": tray.color, "remaining_g": None if tray.remain < 0 else round(tray.remain / 100 * (tray.tray_weight or 1000)),
+                         "active": bool(snap and snap.tray_now == tg), "printer_type": tray.tray_type}
+            else:
+                state, attrs = "prázdný", {"source": "printer", "active": False}
+            self.pub.publish_value(f"slot_{slot}", state, attrs)
 
     def _publish_status(self):
         st = self.health()
@@ -322,6 +359,7 @@ class Collector:
                     self._run_sync()
                 if self._stats_dirty or now - self._last_stats >= STATS_EVERY_S:
                     self.publish_stats()
+                    self.publish_slots()
                 self._publish_status()
                 today = dt.datetime.fromtimestamp(now, self.tz).date()
                 if last_daily != today and dt.datetime.fromtimestamp(now, self.tz).hour >= 3:

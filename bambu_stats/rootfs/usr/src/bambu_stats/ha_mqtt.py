@@ -58,12 +58,16 @@ COMPONENTS: dict[str, tuple] = {
     "current_session": ("Aktuální session", None, None, None, "mdi:progress-clock", "text"),
     "current_filament_g": ("Filament běžícího tisku", "g", "weight", "measurement", "mdi:weight-gram", "sensor"),
     "collector_status": ("Stav collectoru", None, None, None, "mdi:heart-pulse", "diag"),
+    "slot_1": ("AMS slot 1", None, None, None, "mdi:circle-slice-8", "text"),
+    "slot_2": ("AMS slot 2", None, None, None, "mdi:circle-slice-8", "text"),
+    "slot_3": ("AMS slot 3", None, None, None, "mdi:circle-slice-8", "text"),
+    "slot_4": ("AMS slot 4", None, None, None, "mdi:circle-slice-8", "text"),
     "recompute": ("Přepočítat statistiky", None, None, None, "mdi:refresh", "button"),
     "refetch_3mf": ("Znovu načíst 3MF", None, None, None, "mdi:file-refresh", "button"),
 }
 CURRENCY_SYMBOLS = {"CZK": "Kč", "EUR": "€", "USD": "$", "GBP": "£", "PLN": "zł"}
 ATTR_KEYS = {"total_filament_kg", "most_used_material", "last_print", "print_history", "usage", "current_session",
-             "current_filament_g", "current_cost", "total_cost", "collector_status"}
+             "current_filament_g", "current_cost", "total_cost", "collector_status", "slot_1", "slot_2", "slot_3", "slot_4"}
 
 
 class HAPublisher:

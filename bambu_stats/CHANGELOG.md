@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.2 - 2026-09-09
+- Entity slot_1..4: co je v AMS slotech podle Spoolmanu (nazev civky, barva, zbyva g, cena), fallback udaje tiskarny.
+
 ## 0.4.1 - 2026-09-09
 - Oprava: u uzavrene session se uz necte ziva cloud hmotnost (patri dalsimu tisku). Prikaz set_plan:<konec_id>:<g>[:<m>].
 
