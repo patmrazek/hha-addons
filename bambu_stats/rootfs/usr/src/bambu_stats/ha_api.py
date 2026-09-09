@@ -45,6 +45,19 @@ class HomeAssistant:
         except (TypeError, ValueError):
             return None
 
+    def image(self, entity_id: str) -> bytes | None:
+        """Stáhne obrázek image entity (např. náhled modelu z ha-bambulab) přes image_proxy."""
+        if not self.available or not entity_id:
+            return None
+        try:
+            req = urllib.request.Request(f"{self.base}/image_proxy/{entity_id}", headers={"Authorization": f"Bearer {self.token}"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = r.read()
+                return data if len(data) > 500 else None
+        except (urllib.error.URLError, OSError) as e:
+            LOG.debug("image %s: %s", entity_id, e)
+            return None
+
     def config(self) -> dict | None:
         try:
             return self._get("/config") if self.available else None

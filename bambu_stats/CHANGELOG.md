@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 - 2026-09-09
+- Kontrola filamentu pred tiskem (filament_check: plan per slot vs. zbyvajici gramy civky ve Spoolmanu).
+- Udrzba: tlacitka maintenance_done / desiccant_changed, senzory hours_since_maintenance, prints_since_maintenance,
+  days_since_desiccant, nozzle_wear; options maintenance_every_hours, desiccant_every_days.
+- Nahledy modelu do /config/www/bambu_stats/covers (map homeassistant_config), sloupec img v historii; statistiky per model (models).
+
 ## 0.4.2 - 2026-09-09
 - Entity slot_1..4: co je v AMS slotech podle Spoolmanu (nazev civky, barva, zbyva g, cena), fallback udaje tiskarny.
 

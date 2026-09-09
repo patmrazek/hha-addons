@@ -58,6 +58,14 @@ COMPONENTS: dict[str, tuple] = {
     "current_session": ("Aktuální session", None, None, None, "mdi:progress-clock", "text"),
     "current_filament_g": ("Filament běžícího tisku", "g", "weight", "measurement", "mdi:weight-gram", "sensor"),
     "collector_status": ("Stav collectoru", None, None, None, "mdi:heart-pulse", "diag"),
+    "filament_check": ("Kontrola filamentu před tiskem", None, None, None, "mdi:clipboard-check", "text"),
+    "hours_since_maintenance": ("Hodin tisku od údržby", "h", "duration", None, "mdi:wrench-clock", "sensor"),
+    "prints_since_maintenance": ("Tisků od údržby", None, None, None, "mdi:wrench", "sensor"),
+    "days_since_desiccant": ("Dní od výměny silikagelu", "d", None, None, "mdi:water-percent", "sensor"),
+    "nozzle_wear": ("Opotřebení trysky", "%", None, None, "mdi:printer-3d-nozzle-alert", "sensor"),
+    "models": ("Statistiky modelů", None, None, None, "mdi:cube-outline", "text"),
+    "maintenance_done": ("Údržba provedena", None, None, None, "mdi:wrench-check", "button"),
+    "desiccant_changed": ("Silikagel vyměněn", None, None, None, "mdi:water-off", "button"),
     "slot_1": ("AMS slot 1", None, None, None, "mdi:circle-slice-8", "text"),
     "slot_2": ("AMS slot 2", None, None, None, "mdi:circle-slice-8", "text"),
     "slot_3": ("AMS slot 3", None, None, None, "mdi:circle-slice-8", "text"),
@@ -67,7 +75,8 @@ COMPONENTS: dict[str, tuple] = {
 }
 CURRENCY_SYMBOLS = {"CZK": "Kč", "EUR": "€", "USD": "$", "GBP": "£", "PLN": "zł"}
 ATTR_KEYS = {"total_filament_kg", "most_used_material", "last_print", "print_history", "usage", "current_session",
-             "current_filament_g", "current_cost", "total_cost", "collector_status", "slot_1", "slot_2", "slot_3", "slot_4"}
+             "current_filament_g", "current_cost", "total_cost", "collector_status", "slot_1", "slot_2", "slot_3", "slot_4",
+             "filament_check", "hours_since_maintenance", "days_since_desiccant", "models"}
 
 
 class HAPublisher:
@@ -158,7 +167,9 @@ class HAPublisher:
             c = {"name": name, "unique_id": uid, "default_entity_id": f"{platform}.{self.prefix}_{key}", "icon": icon,
                  "availability_topic": f"{self.base}/availability"}
             if kind == "button":
-                c.update({"p": "button", "command_topic": f"{self.base}/cmd", "payload_press": key, "entity_category": "diagnostic"})
+                c.update({"p": "button", "command_topic": f"{self.base}/cmd", "payload_press": key})
+                if key in ("recompute", "refetch_3mf"):
+                    c["entity_category"] = "diagnostic"
             else:
                 c.update({"p": "sensor", "state_topic": f"{self.base}/state/{key}"})
                 if unit:

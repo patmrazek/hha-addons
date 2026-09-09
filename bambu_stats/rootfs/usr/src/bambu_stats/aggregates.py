@@ -30,6 +30,25 @@ def price_of(prices: dict | None, material_group: str | None) -> float:
     return float(prices.get(g) or prices.get("OTHER") or 0.0)
 
 
+def maintenance(db, serial: str, now: float, open_session: dict | None, every_hours: int, desiccant_days: int) -> dict:
+    """Hodiny/tisky od poslední údržby (meta maintenance_done_ts) a dny od výměny silikagelu (meta desiccant_changed_ts)."""
+    now_i = int(now)
+    m_ts = int(db.get_meta(f"maintenance_done_ts_{serial}", 0) or 0)
+    d_ts = int(db.get_meta(f"desiccant_changed_ts_{serial}", 0) or 0)
+    rows = db.query("SELECT duration_s FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL AND ended_ts>?", (serial, m_ts))
+    hours = sum(r["duration_s"] or 0 for r in rows) / 3600
+    if open_session and open_session.get("started_ts"):
+        hours += max(0, now_i - max(open_session["started_ts"], m_ts)) / 3600
+    days = (now_i - d_ts) / 86400 if d_ts else None
+    return {"hours_since_maintenance": round(hours, 1), "prints_since_maintenance": len(rows),
+            "hours_since_maintenance_attrs": {"last_maintenance": _iso(m_ts, ZoneInfo("Europe/Prague")) if m_ts else None,
+                                              "every_hours": every_hours, "due": hours >= every_hours,
+                                              "remaining_hours": round(max(0, every_hours - hours), 1)},
+            "days_since_desiccant": round(days, 1) if days is not None else None,
+            "days_since_desiccant_attrs": {"last_change": _iso(d_ts, ZoneInfo("Europe/Prague")) if d_ts else None,
+                                           "every_days": desiccant_days, "due": (days is not None and days >= desiccant_days)}}
+
+
 def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None = None, prices: dict | None = None) -> dict:
     now_i = int(now)
     sessions = db.query("SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL ORDER BY ended_ts", (serial,))
@@ -134,9 +153,25 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
                      "e": _iso(s["ended_ts"], tz), "d": round((s["duration_s"] or 0) / 60), "r": s["result"],
                      "g": round(s["filament_g"], 1) if s["filament_g"] is not None else None,
                      "m": _materials(db, s["id"]), "src": s["filament_source"], "est": s["filament_is_estimate"],
-                     "c": round(cost_by_session.get(s["id"], 0)), "o": s.get("origin")})
+                     "c": round(cost_by_session.get(s["id"], 0)), "o": s.get("origin"), "img": s.get("cover")})
     out["print_history"] = len(sessions)
     out["print_history_attrs"] = {"history": hist}
+
+    # statistiky per model (podle názvu úlohy)
+    by_model: dict[str, dict] = {}
+    for s in known:
+        n = (s["subtask_name"] or "?").strip()
+        m = by_model.setdefault(n, {"name": n[:40], "n": 0, "ok": 0, "min": 0.0, "g": 0.0, "c": 0.0, "last": 0, "img": None})
+        m["n"] += 1; m["ok"] += int(s["result"] == "success"); m["min"] += (s["duration_s"] or 0) / 60
+        m["g"] += s["filament_g"] or 0; m["c"] += cost_by_session.get(s["id"], 0); m["last"] = max(m["last"], s["ended_ts"] or 0)
+        if s.get("cover"):
+            m["img"] = s["cover"]
+    models = sorted(by_model.values(), key=lambda m: (-m["n"], -m["last"]))[:15]
+    for m in models:
+        m["avg_min"] = round(m["min"] / m["n"]); m["avg_g"] = round(m["g"] / m["n"], 1); m["c"] = round(m["c"]); m["g"] = round(m["g"])
+        m["last"] = _iso(m["last"], tz); m["ok_pct"] = round(100 * m["ok"] / m["n"]); m.pop("min", None)
+    out["models"] = len(by_model)
+    out["models_attrs"] = {"models": models}
 
     # denní / měsíční řady pro grafy
     out["usage_attrs"] = _series(known, fil_rows, now_i, tz, db, serial)
@@ -182,7 +217,7 @@ def _session_attrs(db, s: dict, tz) -> dict:
                        "m": f["used_m"], "source": f["source"], "estimate": bool(f["is_estimate"])} for f in fils],
         "print_error": s["print_error"], "fail_reason": s["fail_reason"], "hms_serious": s["hms_serious_count"],
         "print_type": s["print_type"], "nozzle": f"{s['nozzle_type']} {s['nozzle_diameter']}".strip(), "speed_level": s["spd_lvl"],
-        "origin": s.get("origin"),
+        "origin": s.get("origin"), "cover": s.get("cover"),
     }
 
 

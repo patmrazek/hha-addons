@@ -57,6 +57,9 @@ class Settings:
     sync_instance: str = ""
     sync_interval_min: int = 10
     spoolman_url: str = ""
+    maintenance_every_hours: int = 200
+    desiccant_every_days: int = 60
+    covers_dir: Path = Path("/homeassistant/www/bambu_stats/covers")
 
     @property
     def db_path(self) -> Path:
@@ -113,4 +116,7 @@ def load() -> Settings:
     s.sync_instance = (opts.get("sync_instance") or os.environ.get("BAMBU_SYNC_INSTANCE", "")).strip().lower().replace(" ", "-")
     s.sync_interval_min = int(opts.get("sync_interval_min", s.sync_interval_min))
     s.spoolman_url = (opts.get("spoolman_url") or os.environ.get("BAMBU_SPOOLMAN_URL", "")).strip()
+    s.maintenance_every_hours = int(opts.get("maintenance_every_hours", s.maintenance_every_hours))
+    s.desiccant_every_days = int(opts.get("desiccant_every_days", s.desiccant_every_days))
+    s.covers_dir = Path(os.environ.get("BAMBU_COVERS_DIR", str(s.covers_dir)))
     return s

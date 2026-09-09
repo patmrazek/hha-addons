@@ -93,6 +93,11 @@ class Collector:
                     LOG.info("session %s: slot nastaven na %s a prepocitan", row["id"][-8:], tray)
             except Exception:
                 LOG.exception("assign_slot selhal")
+        elif cmd in ("maintenance_done", "desiccant_changed"):
+            self.db.set_meta(f"{cmd}_ts_{self.serial}", int(time.time()))
+            LOG.info("%s zaznamenáno", cmd)
+            self._stats_dirty = True
+            self.publish_stats(force=True)
         elif cmd.startswith("set_plan:"):
             # set_plan:<konec_id_session>:<gramy>[:<metry>] - rucne opravit planovanou hmotnost (napr. po prepsani cloud hodnotou)
             try:
@@ -218,6 +223,8 @@ class Collector:
                         sess.start_source = "cloud_ha"
                         self._last_current = None
                 self._publish_current_filament(self.sm.session)
+                self.publish_filament_check(sid)
+                self.save_cover(sid)
             except Exception:
                 LOG.exception("resolver filamentu selhal")
 
@@ -256,6 +263,52 @@ class Collector:
         if tray_key != getattr(self, "_last_tray_key", None):
             self._last_tray_key = tray_key
             threading.Thread(target=self.publish_slots, daemon=True).start()
+
+    def publish_filament_check(self, sid: str):
+        """Plán tisku per slot vs. zbývající gramy na přiřazené cívce ve Spoolmanu → ok / low / unknown."""
+        row = self.db.get_session(sid) or {}
+        fils = self.db.filaments(sid)
+        if not fils or not any(f.get("used_g") for f in fils):
+            self.pub.publish_value("filament_check", "unknown", {"session_id": sid, "name": row.get("subtask_name"), "reason": "plán hmotnosti není k dispozici", "slots": []})
+            return
+        spools = {sp["id"]: sp for sp in (self.spoolman.spools() if self.spoolman else [])}
+        slots, state = [], "ok"
+        for f in fils:
+            sp = spools.get(f.get("spool_id"))
+            need = round(f.get("used_g") or 0, 1)
+            if sp is None:
+                slots.append({"slot": (f["tray_global"] or 0) % 4 + 1 if f.get("tray_global") is not None else None, "material": f.get("material"), "need_g": need, "remaining_g": None, "status": "unknown"})
+                state = "unknown" if state == "ok" else state
+                continue
+            rem = round(sp.get("remaining_weight") or 0)
+            st = "low" if rem < need * 1.05 else "ok"
+            if st == "low":
+                state = "low"
+            slots.append({"slot": f["tray_global"] % 4 + 1, "spool": f"{((sp.get('filament') or {}).get('vendor') or {}).get('name', '')} {(sp.get('filament') or {}).get('name', '')}".strip(),
+                          "material": f.get("material"), "need_g": need, "remaining_g": rem, "deficit_g": round(max(0, need - rem)), "status": st})
+        self.pub.publish_value("filament_check", state, {"session_id": sid, "name": row.get("subtask_name"), "slots": slots,
+                                                         "checked": dt.datetime.now(self.tz).strftime("%Y-%m-%dT%H:%M")})
+        if state == "low":
+            LOG.warning("kontrola filamentu: %s", [x for x in slots if x["status"] == "low"])
+
+    def save_cover(self, sid: str):
+        """Uloží náhled modelu (ha-bambulab image entita, z cloudu/3MF) do /config/www → /local/bambu_stats/covers/<id>.jpg."""
+        row = self.db.get_session(sid) or {}
+        if row.get("cover") or not self.printer.ha_weight_entity:
+            return
+        ent = self.printer.ha_weight_entity.replace("sensor.", "image.").replace("_print_weight", "_cover_image")
+        data = self.ha.image(ent)
+        if not data:
+            return
+        try:
+            d = self.settings.covers_dir
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{sid}.jpg").write_bytes(data)
+            url = f"/local/bambu_stats/covers/{sid}.jpg" if str(d).startswith("/homeassistant/www") else None
+            self.db.update_session(sid, cover=url)
+            LOG.info("náhled modelu uložen: %s (%d kB)", sid[-8:], len(data) // 1024)
+        except OSError as e:
+            LOG.debug("cover: %s", e)
 
     def _publish_current_filament(self, session):
         """Odhad zatím spotřebovaného filamentu běžícího tisku = plán (3MF/cloud) × procenta. Vždy odhad."""
@@ -320,6 +373,13 @@ class Collector:
             with self._lock:
                 open_sess = self.sm.session.to_row() if self.sm.session else None
             stats = aggregates.compute(self.db, self.serial, time.time(), self.tz, open_sess, self.settings.prices)
+            stats.update(aggregates.maintenance(self.db, self.serial, time.time(), open_sess,
+                                                self.settings.maintenance_every_hours, self.settings.desiccant_every_days))
+            with self._lock:
+                snap = self._last_snapshot
+            if snap and snap.nozzle_wear is not None:
+                stats["nozzle_wear"] = round(snap.nozzle_wear, 1)
+                stats["nozzle_wear_attrs"] = {"nozzle_type": snap.nozzle_type, "diameter": snap.nozzle_diameter}
             self.pub.publish_stats(stats, force=force)
             self._last_stats = time.time()
             self._stats_dirty = False

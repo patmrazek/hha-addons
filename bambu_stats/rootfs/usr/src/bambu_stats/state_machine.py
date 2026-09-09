@@ -90,6 +90,7 @@ class Snapshot:
     wifi_signal: int = 0
     ams_humidity: int | None = None
     ams_temp: float | None = None
+    nozzle_wear: float | None = None
 
     @classmethod
     def from_print(cls, p: dict, ts: float) -> "Snapshot":
@@ -134,7 +135,8 @@ class Snapshot:
             fan_chamber=to_int(p.get("big_fan2_speed")), fan_heatbreak=to_int(p.get("heatbreak_fan_speed")),
             wifi_signal=to_int(str(p.get("wifi_signal") or "0").replace("dBm", "")),
             ams_humidity=to_int(first_ams.get("humidity_raw"), None) if first_ams else None,
-            ams_temp=to_float(first_ams.get("temp"), None) if first_ams.get("temp") is not None else None)
+            ams_temp=to_float(first_ams.get("temp"), None) if first_ams.get("temp") is not None else None,
+            nozzle_wear=to_float((((dev.get("nozzle") or {}).get("info") or [{}])[0]).get("wear"), None) if dev.get("nozzle") else None)
 
     @property
     def is_active(self) -> bool:

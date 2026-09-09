@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 LOG = logging.getLogger("db")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   trays_start TEXT, trays_end TEXT,
   threemf_path TEXT, threemf_status TEXT, threemf_fetched_ts INTEGER,
   incomplete INTEGER DEFAULT 0, manual_override INTEGER DEFAULT 0, notes TEXT,
-  origin TEXT, synced_ts INTEGER,
+  origin TEXT, synced_ts INTEGER, cover TEXT,
   created_ts INTEGER, updated_ts INTEGER, last_seen_ts INTEGER);
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_open ON sessions(printer_serial, fingerprint) WHERE ended_ts IS NULL;
 CREATE INDEX IF NOT EXISTS sessions_ended ON sessions(printer_serial, ended_ts);
@@ -94,6 +94,8 @@ class Database:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN origin TEXT")
         if "synced_ts" not in cols:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN synced_ts INTEGER")
+        if "cover" not in cols:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN cover TEXT")
         fcols = {r[1] for r in self.conn.execute("PRAGMA table_info(session_filaments)")}
         for col, typ in (("spool_id", "INTEGER"), ("spool_price_per_kg", "REAL"), ("spool_deducted_g", "REAL DEFAULT 0")):
             if col not in fcols:
