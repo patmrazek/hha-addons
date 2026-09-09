@@ -133,7 +133,7 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
                      "e": _iso(s["ended_ts"], tz), "d": round((s["duration_s"] or 0) / 60), "r": s["result"],
                      "g": round(s["filament_g"], 1) if s["filament_g"] is not None else None,
                      "m": _materials(db, s["id"]), "src": s["filament_source"], "est": s["filament_is_estimate"],
-                     "c": round(cost_by_session.get(s["id"], 0))})
+                     "c": round(cost_by_session.get(s["id"], 0)), "o": s.get("origin")})
     out["print_history"] = len(sessions)
     out["print_history_attrs"] = {"history": hist}
 
@@ -181,6 +181,7 @@ def _session_attrs(db, s: dict, tz) -> dict:
                        "m": f["used_m"], "source": f["source"], "estimate": bool(f["is_estimate"])} for f in fils],
         "print_error": s["print_error"], "fail_reason": s["fail_reason"], "hms_serious": s["hms_serious_count"],
         "print_type": s["print_type"], "nozzle": f"{s['nozzle_type']} {s['nozzle_diameter']}".strip(), "speed_level": s["spd_lvl"],
+        "origin": s.get("origin"),
     }
 
 

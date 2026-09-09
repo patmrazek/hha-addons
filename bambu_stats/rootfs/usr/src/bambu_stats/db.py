@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 LOG = logging.getLogger("db")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   trays_start TEXT, trays_end TEXT,
   threemf_path TEXT, threemf_status TEXT, threemf_fetched_ts INTEGER,
   incomplete INTEGER DEFAULT 0, manual_override INTEGER DEFAULT 0, notes TEXT,
+  origin TEXT, synced_ts INTEGER,
   created_ts INTEGER, updated_ts INTEGER, last_seen_ts INTEGER);
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_open ON sessions(printer_serial, fingerprint) WHERE ended_ts IS NULL;
 CREATE INDEX IF NOT EXISTS sessions_ended ON sessions(printer_serial, ended_ts);
@@ -87,6 +88,11 @@ class Database:
 
     def _migrate(self):
         v = int(self.get_meta("schema_version", "0"))
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(sessions)")}
+        if "origin" not in cols:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN origin TEXT")
+        if "synced_ts" not in cols:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN synced_ts INTEGER")
         if v < SCHEMA_VERSION:
             self.set_meta("schema_version", str(SCHEMA_VERSION))
 
@@ -171,6 +177,14 @@ class Database:
     def close_pause(self, sid, end_ts):
         with self.lock:
             self.conn.execute("UPDATE session_pauses SET end_ts=? WHERE session_id=? AND end_ts IS NULL", (int(end_ts), sid))
+
+    def replace_pauses(self, sid, rows: list[dict]):
+        with self.lock:
+            self.conn.execute("DELETE FROM session_pauses WHERE session_id=?", (sid,))
+            for r in rows:
+                r = {**r, "session_id": sid}
+                cols = list(r.keys())
+                self.conn.execute(f"INSERT INTO session_pauses({','.join(cols)}) VALUES({','.join('?'*len(cols))})", [r[c] for c in cols])
 
     def pauses(self, sid) -> list[dict]:
         with self.lock:

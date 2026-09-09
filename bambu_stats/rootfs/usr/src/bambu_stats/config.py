@@ -52,6 +52,10 @@ class Settings:
     health_port: int = 8099
     prices: dict = field(default_factory=dict)   # material_group → cena za kg
     currency: str = "CZK"
+    sync_repo: str = ""
+    sync_token: str = ""
+    sync_instance: str = ""
+    sync_interval_min: int = 10
 
     @property
     def db_path(self) -> Path:
@@ -103,4 +107,8 @@ def load() -> Settings:
         except (TypeError, ValueError):
             continue
     s.currency = (opts.get("currency") or s.currency).upper()
+    s.sync_repo = (opts.get("sync_repo") or os.environ.get("BAMBU_SYNC_REPO", "")).strip()
+    s.sync_token = (opts.get("sync_token") or os.environ.get("BAMBU_SYNC_TOKEN", "")).strip()
+    s.sync_instance = (opts.get("sync_instance") or os.environ.get("BAMBU_SYNC_INSTANCE", "")).strip().lower().replace(" ", "-")
+    s.sync_interval_min = int(opts.get("sync_interval_min", s.sync_interval_min))
     return s

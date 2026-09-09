@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0 – 2026-09-09
+- Synchronizace historie mezi lokalitami přes sdílený privátní git repozitář (`sync_repo`, `sync_token`, `sync_instance`).
+  Sloupce `origin`/`synced_ts` v sessions, `git` v image.
+
 ## 0.2.1 – 2026-09-09
 - Nákladové entity mají jednotku jako symbol měny (Kč) místo ISO kódu.
 

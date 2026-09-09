@@ -16,6 +16,7 @@ from .ha_api import HomeAssistant
 from .ha_mqtt import HAPublisher
 from .printer_mqtt import PrinterMQTT
 from .sampler import Sampler
+from .sync import GitSync
 from .state_machine import Event, Snapshot, StateMachine
 
 LOG = logging.getLogger("collector")
@@ -48,6 +49,11 @@ class Collector:
         self._last_snapshot: Snapshot | None = None
         self._stats_dirty = True
         self.db.touch_printer(self.serial, name=printer.name, ip=printer.host)
+        self.sync: GitSync | None = None
+        if settings.sync_repo and settings.sync_instance:
+            self.sync = GitSync(db, settings.sync_repo, settings.sync_token, settings.sync_instance, settings.data_dir)
+            LOG.info("sync historie zapnut: %s jako '%s'", settings.sync_repo, settings.sync_instance)
+        self._last_sync = 0.0
 
     # --- start / stop --------------------------------------------------------------
     def start(self):
@@ -146,6 +152,16 @@ class Collector:
         self._stats_dirty = True
         self.publish_stats(force=True)
         self.export_csv()
+        self._run_sync()
+
+    def _run_sync(self):
+        if not self.sync:
+            return
+        res = self.sync.run_once()
+        self._last_sync = time.time()
+        if res.get("imported"):
+            self._stats_dirty = True
+            self.publish_stats(force=True)
 
     def export_csv(self):
         """CSV záloha historie do /share/bambu_stats/ (přístupné přes Samba/SSH, součást HA zálohy)."""
@@ -252,7 +268,9 @@ class Collector:
                 "printer_mqtt_connected": self.mqtt.connected, "last_report_age_s": round(age) if age is not None else None,
                 "messages": self.mqtt.msg_count, "ha_mqtt_connected": self.pub.connected, "db_size_mb": self.db.size_mb(),
                 "open_session": sess.id if sess else None, "open_session_name": sess.subtask_name if sess else None,
-                "ha_api": self.ha.available}
+                "ha_api": self.ha.available,
+                "sync": ({"instance": self.sync.instance, "last_ok": int(self.sync.last_ok) if self.sync.last_ok else None,
+                          "error": self.sync.last_error, "imported_total": self.sync.imported_total} if self.sync else None)}
 
     # --- plánovač -------------------------------------------------------------------------------------
     def _scheduler(self):
@@ -270,6 +288,8 @@ class Collector:
                         if elapsed >= mark and mark not in self._filament_marks:
                             self._filament_marks.add(mark)
                             self._resolve_filament(sess.id, False)
+                if self.sync and now - self._last_sync >= self.settings.sync_interval_min * 60:
+                    self._run_sync()
                 if self._stats_dirty or now - self._last_stats >= STATS_EVERY_S:
                     self.publish_stats()
                 self._publish_status()

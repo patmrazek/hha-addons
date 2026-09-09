@@ -28,6 +28,17 @@ configuration:
   entity_prefix:
     name: Entity prefix
     description: Prefix for generated entities, e.g. bambu_p2s → sensor.bambu_p2s_total_prints.
+  sync_repo:
+    name: Sync repository (URL)
+    description: Private git repo shared by all locations, e.g. https://github.com/<user>/HHA-bambu-data.git. Each add-on instance writes its own file, imports the others.
+  sync_token:
+    name: Sync token
+    description: Fine-grained GitHub PAT with Contents read/write on that repo only.
+  sync_instance:
+    name: Instance name
+    description: Unique per location, e.g. hacienda / podharfou.
+  sync_interval_min:
+    name: Sync interval (min)
   samples_retention_days:
     name: Telemetry retention (days)
   log_level:

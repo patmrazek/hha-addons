@@ -4,7 +4,8 @@ FROM $BUILD_FROM
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip3 install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+RUN apk add --no-cache git \
+ && pip3 install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 COPY rootfs /
 RUN chmod a+x /run.sh
