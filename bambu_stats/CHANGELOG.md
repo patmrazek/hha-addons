@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.1 - 2026-09-09
+- Nahled modelu se uklada i pri dokonceni, refetch a periodicky u bezici session.
+
 ## 0.5.0 - 2026-09-09
 - Kontrola filamentu pred tiskem (filament_check: plan per slot vs. zbyvajici gramy civky ve Spoolmanu).
 - Udrzba: tlacitka maintenance_done / desiccant_changed, senzory hours_since_maintenance, prints_since_maintenance,

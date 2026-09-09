@@ -122,6 +122,9 @@ class Collector:
                     self.db.update_session(sess.id, threemf_status=None)
                     row["threemf_status"] = None
                     self.filament.resolve(row, final=False)
+                    self.publish_filament_check(sess.id)
+                    self.save_cover(sess.id)
+                    self._publish_current_filament(sess)
             else:
                 last = self.db.last_closed_session(self.serial)
                 if last:
@@ -180,6 +183,7 @@ class Collector:
     def _finalize(self, sid: str):
         row = self.db.get_session(sid)
         if row:
+            self.save_cover(sid)
             try:
                 self.filament.resolve(row, final=True)
             except Exception:
@@ -410,6 +414,9 @@ class Collector:
                 with self._lock:
                     sess = self.sm.session
                 if sess:
+                    row = self.db.get_session(sess.id) or {}
+                    if not row.get("cover") and now - sess.started_ts > 60:
+                        self.save_cover(sess.id)
                     elapsed = now - sess.started_ts
                     for mark in FILAMENT_RETRY_AT_S:
                         if elapsed >= mark and mark not in self._filament_marks:
