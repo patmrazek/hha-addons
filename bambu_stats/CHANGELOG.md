@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1 - 2026-09-10
+- OPRAVA: resolve filamentu bezel soubezne z planovace i z retry marku a odecet ze civky se provedl dvakrat.
+  Nove je resolve serializovany zamkem.
+
 ## 0.8.0 - 2026-09-10
 - Prubezny odecet ze civky ve Spoolmanu behem tisku (kazdych 5 min, jen prirustky nad 5 g, strop 90 % odhadu),
   po dokonceni dopocet na plnou spotrebu. Pri revizi planu dolu se prebytek vrati (PATCH remaining_weight).

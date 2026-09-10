@@ -46,6 +46,7 @@ class Collector:
                                 pinned_fingerprint=pinfo.get("tls_fingerprint"), on_pin=self._on_pin, on_connection=self._on_conn)
         self.pub = HAPublisher(settings.mqtt, prefix, self.serial, printer.name, on_command=self.on_command, currency=settings.currency)
         self._lock = threading.Lock()
+        self._resolve_lock = threading.Lock()   # resolve smí běžet jen jednou naráz (jinak dvojí odečet ze cívky)
         self._last_progress_write = 0.0
         self._last_stats = 0.0
         self._last_current: tuple | None = None
@@ -117,7 +118,8 @@ class Collector:
                 if row:
                     self.db.update_session(row["id"], cloud_weight_g=grams, cloud_length_m=metres, plan_weight_g=grams, plan_length_m=metres)
                     row = self.db.get_session(row["id"])
-                    self.filament.resolve(row, final=row.get("ended_ts") is not None)
+                    with self._resolve_lock:
+                        self.filament.resolve(row, final=row.get("ended_ts") is not None)
                     self._stats_dirty = True
                     self.publish_stats(force=True)
                     LOG.info("session %s: plan nastaven na %.1f g a prepocitan", row["id"][-8:], grams)
@@ -132,7 +134,8 @@ class Collector:
                 if row:
                     self.db.update_session(sess.id, threemf_status=None)
                     row["threemf_status"] = None
-                    self.filament.resolve(row, final=False)
+                    with self._resolve_lock:
+                        self.filament.resolve(self.db.get_session(sess.id), final=False)
                     self.publish_filament_check(sess.id)
                     self.save_cover(sess.id)
                     self._publish_current_filament(sess)
@@ -142,7 +145,8 @@ class Collector:
                     self.filament._attempts.pop(last["id"], None)
                     self.db.update_session(last["id"], threemf_status=None)
                     last["threemf_status"] = None
-                    self.filament.resolve(last, final=True)
+                    with self._resolve_lock:
+                        self.filament.resolve(last, final=True)
                     self._stats_dirty = True
                     self.publish_stats(force=True)
 
@@ -195,10 +199,11 @@ class Collector:
         row = self.db.get_session(sid)
         if row:
             self.save_cover(sid)
-            try:
-                self.filament.resolve(row, final=True)
-            except Exception:
-                LOG.exception("resolver filamentu selhal")
+            with self._resolve_lock:
+                try:
+                    self.filament.resolve(self.db.get_session(sid), final=True)
+                except Exception:
+                    LOG.exception("resolver filamentu selhal")
         self._stats_dirty = True
         self.publish_stats(force=True)
         self.export_csv()
@@ -225,6 +230,15 @@ class Collector:
             LOG.warning("CSV export selhal: %s", e)
 
     def _resolve_filament(self, sid: str, final: bool):
+        if not self._resolve_lock.acquire(blocking=False):
+            LOG.debug("resolve filamentu už běží, přeskakuji")
+            return
+        try:
+            self.__resolve_filament(sid, final)
+        finally:
+            self._resolve_lock.release()
+
+    def __resolve_filament(self, sid: str, final: bool):
         row = self.db.get_session(sid)
         if row and row.get("ended_ts") is None:
             try:
