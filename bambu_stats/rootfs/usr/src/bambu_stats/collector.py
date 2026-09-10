@@ -390,10 +390,16 @@ class Collector:
                                                 self.settings.maintenance_every_hours, self.settings.desiccant_every_days))
             with self._lock:
                 snap = self._last_snapshot
+            key_hist = f"desiccant_changed_history_{self.serial}"
             try:
-                changes = json.loads(self.db.get_meta(f"desiccant_changed_history_{self.serial}", "[]") or "[]")
+                changes = json.loads(self.db.get_meta(key_hist, "[]") or "[]")
             except ValueError:
                 changes = []
+            if not changes:   # výměna zaznamenaná před 0.6.0 zná jen poslední čas – doplnit do historie
+                last = int(self.db.get_meta(f"desiccant_changed_ts_{self.serial}", 0) or 0)
+                if last:
+                    changes = [last]
+                    self.db.set_meta(key_hist, json.dumps(changes))
             hum = aggregates.humidity_series(self.db, self.serial, time.time(), self.tz, changes)
             stats["ams_humidity_history"] = (snap.ams_humidity if snap and snap.ams_humidity is not None else None)
             stats["ams_humidity_history_attrs"] = hum
