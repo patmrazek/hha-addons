@@ -51,11 +51,12 @@ class Spoolman:
                 return s
         if slot is None:
             return None
-        for s in self.spools():
-            at = (s.get("extra") or {}).get("active_tray") or ""
-            if re.search(rf'_tray_{slot}"?$', at):
-                return s
-        return None
+        # více cívek může mít stejný slot (staré přiřazení nejde ve Spoolmanu smazat) → vzít tu naposledy použitou
+        found = [s for s in self.spools() if re.search(rf'_tray_{slot}"?$', (s.get("extra") or {}).get("active_tray") or "")]
+        if not found:
+            return None
+        found.sort(key=lambda s: (s.get("first_used") or "", s.get("last_used") or "", s.get("registered") or ""), reverse=True)
+        return found[0]
 
     @staticmethod
     def price_per_kg(spool: dict) -> float | None:

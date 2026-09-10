@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.2 - 2026-09-10
+- Kdyz ma stejny slot prirazeno vic civek (Spoolman neumi extra smazat), bere se naposledy pouzita.
+
 ## 0.7.1 - 2026-09-10
 - Sloty se kontroluji kazdou minutu (zmena prirazeni civky ve Spoolmanu se projevi hned) a po prikazu recompute.
 
