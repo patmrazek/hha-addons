@@ -81,6 +81,7 @@ class Collector:
         if cmd == "recompute":
             self._stats_dirty = True
             self.publish_stats(force=True)
+            self.publish_slots()
         elif cmd.startswith("assign_slot:"):
             # assign_slot:<konec_id_session>:<tray_global> - rucne doplnit slot u tisku, kde tiskarna slot neposlala
             try:
@@ -461,6 +462,9 @@ class Collector:
                     self._run_sync()
                 if self._stats_dirty or now - self._last_stats >= STATS_EVERY_S:
                     self.publish_stats()
+                # přiřazení cívek se mění ve Spoolmanu (mimo tiskárnu) → kontrolovat pravidelně, publikuje se jen změna
+                if now - getattr(self, "_last_slots", 0) >= 60:
+                    self._last_slots = now
                     self.publish_slots()
                 self._publish_status()
                 today = dt.datetime.fromtimestamp(now, self.tz).date()

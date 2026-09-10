@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.1 - 2026-09-10
+- Sloty se kontroluji kazdou minutu (zmena prirazeni civky ve Spoolmanu se projevi hned) a po prikazu recompute.
+
 ## 0.7.0 - 2026-09-10
 - Detekce neshody civky: kdyz tiskarna hlasi u slotu jiny material nez civka prirazena ve Spoolmanu, slot dostane ⚠
   a entita slot_mismatch prepne na on (automatizace posle push). Brani odectu z chybne civky.
