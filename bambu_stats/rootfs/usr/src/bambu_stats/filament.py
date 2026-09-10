@@ -46,7 +46,11 @@ class FilamentResolver:
         if cache.exists():
             plates = threemf.parse_slice_info(cache.read_bytes())
             want = threemf.plate_index_from_gcode(session.get("gcode_file") or "")
-            return next((p for p in plates if p.index == want), plates[0] if plates else None)
+            plate = next((p for p in plates if p.index == want), plates[0] if plates else None)
+            if plate and session.get("threemf_status") != "ok":
+                self.db.update_session(session["id"], threemf_status="ok")
+                session["threemf_status"] = "ok"
+            return plate
         if session.get("threemf_status") == "ok":
             return None
         if self._attempts.get(session["id"], 0) >= 6 or not session.get("subtask_name"):

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.2 - 2026-09-10
+- 3MF z cache drzi threemf_status=ok (zdroj hmotnosti se po refetch nezobrazoval).
+
 ## 0.5.1 - 2026-09-09
 - Nahled modelu se uklada i pri dokonceni, refetch a periodicky u bezici session.
 
