@@ -63,6 +63,7 @@ COMPONENTS: dict[str, tuple] = {
     "prints_since_maintenance": ("Tisků od údržby", None, None, None, "mdi:wrench", "sensor"),
     "days_since_desiccant": ("Dní od výměny silikagelu", "d", None, None, "mdi:water-percent", "sensor"),
     "nozzle_wear": ("Opotřebení trysky", "%", None, None, "mdi:printer-3d-nozzle-alert", "sensor"),
+    "ams_humidity_history": ("Vlhkost AMS v čase", "%", "humidity", "measurement", "mdi:chart-line", "sensor"),
     "models": ("Statistiky modelů", None, None, None, "mdi:cube-outline", "text"),
     "maintenance_done": ("Údržba provedena", None, None, None, "mdi:wrench-check", "button"),
     "desiccant_changed": ("Silikagel vyměněn", None, None, None, "mdi:water-off", "button"),
@@ -76,7 +77,7 @@ COMPONENTS: dict[str, tuple] = {
 CURRENCY_SYMBOLS = {"CZK": "Kč", "EUR": "€", "USD": "$", "GBP": "£", "PLN": "zł"}
 ATTR_KEYS = {"total_filament_kg", "most_used_material", "last_print", "print_history", "usage", "current_session",
              "current_filament_g", "current_cost", "total_cost", "collector_status", "slot_1", "slot_2", "slot_3", "slot_4",
-             "filament_check", "hours_since_maintenance", "days_since_desiccant", "models"}
+             "filament_check", "hours_since_maintenance", "days_since_desiccant", "models", "ams_humidity_history"}
 
 
 class HAPublisher:

@@ -49,6 +49,44 @@ def maintenance(db, serial: str, now: float, open_session: dict | None, every_ho
                                            "every_days": desiccant_days, "due": (days is not None and days >= desiccant_days)}}
 
 
+def humidity_series(db, serial: str, now: float, tz, changes: list[int] | None = None) -> dict:
+    """Vlhkost v AMS v čase z podvzorkované telemetrie: 48 h po hodinách (průměr) a 90 dní po dnech (min/prům/max).
+
+    Vlhkost se zapisuje do `samples` každých 10 s při tisku / 60 s v klidu, takže trend přežije i restart HA
+    (recorder drží jen ~10 dní). `changes` = časy výměn silikagelu, na grafu se zobrazí jako body.
+    """
+    now_i = int(now)
+    h0 = now_i - 48 * 3600
+    rows = db.query("SELECT ts, ams_humidity FROM samples WHERE printer_serial=? AND ts>=? AND ams_humidity IS NOT NULL ORDER BY ts",
+                    (serial, now_i - 90 * 86400))
+    hourly = [[0, 0.0] for _ in range(48)]          # [počet, součet]
+    today0 = _local(now_i, tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    daily_start = today0 - dt.timedelta(days=89)
+    daily = [[0, 0.0, None, None] for _ in range(90)]   # [počet, součet, min, max]
+    for r in rows:
+        v = r["ams_humidity"]
+        if r["ts"] >= h0:
+            i = int((r["ts"] - h0) // 3600)
+            if 0 <= i < 48:
+                hourly[i][0] += 1
+                hourly[i][1] += v
+        di = (_local(r["ts"], tz).replace(hour=0, minute=0, second=0, microsecond=0) - daily_start).days
+        if 0 <= di < 90:
+            d = daily[di]
+            d[0] += 1
+            d[1] += v
+            d[2] = v if d[2] is None else min(d[2], v)
+            d[3] = v if d[3] is None else max(d[3], v)
+    return {
+        "hourly": {"start": _local(h0, tz).strftime("%Y-%m-%dT%H:00"),
+                   "rows": [round(c[1] / c[0], 1) if c[0] else None for c in hourly]},
+        "daily": {"start": daily_start.strftime("%Y-%m-%d"),
+                  "rows": [[round(d[1] / d[0], 1), d[2], d[3]] if d[0] else None for d in daily]},
+        "changes": [_iso(t, tz) for t in sorted(changes or [])],
+        "cols": ["avg", "min", "max"],
+    }
+
+
 def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None = None, prices: dict | None = None) -> dict:
     now_i = int(now)
     sessions = db.query("SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL ORDER BY ended_ts", (serial,))

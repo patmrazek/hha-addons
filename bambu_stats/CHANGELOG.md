@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 - 2026-09-10
+- Vlhkost AMS v case: entita ams_humidity_history (48 h po hodinach, 90 dni po dnech min/prum/max z telemetrie),
+  historie vymen silikagelu a udrzby v meta (desiccant_changed_history / maintenance_done_history) a jako body v grafu.
+
 ## 0.5.2 - 2026-09-10
 - 3MF z cache drzi threemf_status=ok (zdroj hmotnosti se po refetch nezobrazoval).
 

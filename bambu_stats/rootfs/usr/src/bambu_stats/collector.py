@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import threading
 import time
@@ -94,7 +95,15 @@ class Collector:
             except Exception:
                 LOG.exception("assign_slot selhal")
         elif cmd in ("maintenance_done", "desiccant_changed"):
-            self.db.set_meta(f"{cmd}_ts_{self.serial}", int(time.time()))
+            now_ts = int(time.time())
+            self.db.set_meta(f"{cmd}_ts_{self.serial}", now_ts)
+            key = f"{cmd}_history_{self.serial}"          # seznam všech výměn/údržeb kvůli grafu a doložení
+            try:
+                hist = json.loads(self.db.get_meta(key, "[]") or "[]")
+            except ValueError:
+                hist = []
+            hist = sorted(set(hist + [now_ts]))[-50:]
+            self.db.set_meta(key, json.dumps(hist))
             LOG.info("%s zaznamenáno", cmd)
             self._stats_dirty = True
             self.publish_stats(force=True)
@@ -381,6 +390,13 @@ class Collector:
                                                 self.settings.maintenance_every_hours, self.settings.desiccant_every_days))
             with self._lock:
                 snap = self._last_snapshot
+            try:
+                changes = json.loads(self.db.get_meta(f"desiccant_changed_history_{self.serial}", "[]") or "[]")
+            except ValueError:
+                changes = []
+            hum = aggregates.humidity_series(self.db, self.serial, time.time(), self.tz, changes)
+            stats["ams_humidity_history"] = (snap.ams_humidity if snap and snap.ams_humidity is not None else None)
+            stats["ams_humidity_history_attrs"] = hum
             if snap and snap.nozzle_wear is not None:
                 stats["nozzle_wear"] = round(snap.nozzle_wear, 1)
                 stats["nozzle_wear_attrs"] = {"nozzle_type": snap.nozzle_type, "diameter": snap.nozzle_diameter}
