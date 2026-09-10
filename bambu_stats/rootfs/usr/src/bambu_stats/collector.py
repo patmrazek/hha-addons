@@ -450,6 +450,10 @@ class Collector:
                 with self._lock:
                     sess = self.sm.session
                 if sess:
+                    # průběžný odečet ze cívky ve Spoolmanu (jen přírůstky, strop 90 % odhadu)
+                    if self.spoolman and now - getattr(self, "_last_live_deduct", 0) >= 300 and sess.last_percent > 0:
+                        self._last_live_deduct = now
+                        threading.Thread(target=self._resolve_filament, args=(sess.id, False), daemon=True).start()
                     row = self.db.get_session(sess.id) or {}
                     if not row.get("cover") and now - sess.started_ts > 60:
                         self.save_cover(sess.id)

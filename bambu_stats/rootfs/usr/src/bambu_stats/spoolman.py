@@ -65,11 +65,16 @@ class Spoolman:
         return round(float(price) / (float(weight) / 1000), 2) if price else None
 
     def use(self, spool_id: int, grams: float) -> bool:
-        if grams <= 0:
+        """Odečte gramy z cívky; záporná hodnota je vrátí (oprava přeodečtení po revizi plánu)."""
+        if abs(grams) < 0.05:
             return True
         try:
-            self._req(f"/spool/{spool_id}/use", "PUT", {"use_weight": round(grams, 2)})
-            LOG.info("Spoolman: cívka %s −%.1f g", spool_id, grams)
+            if grams > 0:
+                self._req(f"/spool/{spool_id}/use", "PUT", {"use_weight": round(grams, 2)})
+            else:   # /use neumí záporné hodnoty → navýšit remaining_weight přímo
+                sp = self._req(f"/spool/{spool_id}")
+                self._req(f"/spool/{spool_id}", "PATCH", {"remaining_weight": round((sp.get("remaining_weight") or 0) - grams, 2)})
+            LOG.info("Spoolman: cívka %s %s%.1f g", spool_id, "−" if grams > 0 else "+", abs(grams))
             return True
         except (urllib.error.URLError, OSError, ValueError) as e:
             LOG.warning("Spoolman use selhal (cívka %s): %s", spool_id, e)

@@ -21,6 +21,8 @@ from .util import material_group
 
 LOG = logging.getLogger("filament")
 EXTERNAL_SLOT_IDS = {254, 255}
+LIVE_CAP = 0.9          # během tisku odečítat nejvýš 90 % dosud spotřebovaného odhadu
+MIN_STEP_G = 5.0        # menší přírůstky neposílat (šetří zápisy do Spoolmanu)
 
 
 def _trays(session: dict, key: str) -> list[dict]:
@@ -155,8 +157,9 @@ class FilamentResolver:
         result = session.get("result")
         finished_ok = final and result == "success"
         progress = (session.get("last_percent") or 0) / 100.0
+        live_progress = progress
         if not final:
-            progress = 1.0  # u běžícího tisku hlásíme plán celé úlohy (označený jako odhad)
+            progress = 1.0  # v přehledu u běžícího tisku hlásíme plán celé úlohy (označený jako odhad)
         elif result != "success" and progress <= 0 and session.get("total_layers"):
             progress = (session.get("last_layer") or 0) / max(session["total_layers"], 1)
 
@@ -200,6 +203,7 @@ class FilamentResolver:
 
         # Spoolman: cívka podle slotu → cena cívky, odečet (jen rozdíl proti už odečtenému, přežije opakovaný resolve)
         previous = {r["tray_global"]: r for r in self.db.filaments(session["id"]) if r.get("tray_global") is not None}
+        live = 1.0 if final else max(0.0, min(1.0, live_progress))   # kolik z plánu je reálně protlačeno
         trays_by_global = {t["tray_global"]: t for t in trays_start}
         for r in rows:
             prev = previous.get(r["tray_global"]) or {}
@@ -211,9 +215,16 @@ class FilamentResolver:
                 if sp:
                     r["spool_id"] = sp["id"]
                     r["spool_price_per_kg"] = self.spoolman.price_per_kg(sp)
-                    if final and (r["used_g"] or 0) > r["spool_deducted_g"] + 0.05:
-                        if self.spoolman.use(sp["id"], r["used_g"] - r["spool_deducted_g"]):
-                            r["spool_deducted_g"] = r["used_g"]
+                    # cíl odečtu: po dokončení celá spotřeba, během tisku max LIVE_CAP plánu (rezerva proti přeodečtení,
+                    # když se plán ještě upřesní – např. dorazí 3MF s nižší hodnotou než cloud)
+                    target = (r["used_g"] or 0) if final else round((r["used_g"] or 0) * live * LIVE_CAP, 2)
+                    delta = target - r["spool_deducted_g"]
+                    if final and delta < -0.05:      # plán revidován dolů → vrátit přeodečtené
+                        if self.spoolman.use(sp["id"], delta):
+                            r["spool_deducted_g"] = target
+                    elif delta > MIN_STEP_G or (final and delta > 0.05):
+                        if self.spoolman.use(sp["id"], delta):
+                            r["spool_deducted_g"] = target
         if rows:
             total_g = round(sum(r["used_g"] or 0 for r in rows), 2)
             ms = [r["used_m"] for r in rows if r["used_m"] is not None]

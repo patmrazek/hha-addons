@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0 - 2026-09-10
+- Prubezny odecet ze civky ve Spoolmanu behem tisku (kazdych 5 min, jen prirustky nad 5 g, strop 90 % odhadu),
+  po dokonceni dopocet na plnou spotrebu. Pri revizi planu dolu se prebytek vrati (PATCH remaining_weight).
+- Statistiky (kg, pocty, naklady) zustavaji jen za dokoncene tisky.
+
 ## 0.7.2 - 2026-09-10
 - Kdyz ma stejny slot prirazeno vic civek (Spoolman neumi extra smazat), bere se naposledy pouzita.
 
