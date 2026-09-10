@@ -18,6 +18,7 @@ from .ha_mqtt import HAPublisher
 from .printer_mqtt import PrinterMQTT
 from .sampler import Sampler
 from .spoolman import Spoolman
+from .util import material_group
 from .sync import GitSync
 from .state_machine import Event, Snapshot, StateMachine
 
@@ -350,6 +351,7 @@ class Collector:
             snap = self._last_snapshot
         trays = {t.tray_global: t for t in (snap.trays if snap else [])}
         spools = self.spoolman.spools() if self.spoolman else []
+        mismatches: list[dict] = []
         import re as _re
         for slot in range(1, 5):
             tg = slot - 1
@@ -365,10 +367,18 @@ class Collector:
                 fil = sp.get("filament") or {}
                 vendor = (fil.get("vendor") or {}).get("name") or ""
                 state = f"{vendor} {fil.get('name') or ''}".strip()[:255]
+                # tiskárna hlásí jiný materiál než přiřazená cívka → někdo vyměnil cívku a nepřehodil ji ve SpoolmanSync
+                mismatch = bool(tray and tray.tray_type and fil.get("material")
+                                and material_group(tray.tray_type) != material_group(fil.get("material")))
                 attrs = {"source": "spoolman", "spool_id": sp["id"], "material": fil.get("material"), "color": ("#" + fil["color_hex"]) if fil.get("color_hex") else (tray.color if tray else None),
                          "remaining_g": round(sp.get("remaining_weight") or 0), "used_g": round(sp.get("used_weight") or 0),
                          "price_per_kg": self.spoolman.price_per_kg(sp), "location": sp.get("location"), "comment": sp.get("comment"),
-                         "active": bool(snap and snap.tray_now == tg), "printer_type": tray.tray_type if tray else None}
+                         "active": bool(snap and snap.tray_now == tg), "printer_type": tray.tray_type if tray else None,
+                         "mismatch": mismatch, "printer_color": tray.color if tray else None}
+                if mismatch:
+                    state = f"⚠ {state}"[:255]
+                    LOG.warning("slot %d: tiskárna hlásí %s, ale přiřazená cívka je %s – přehoď ji ve SpoolmanSync",
+                                slot, tray.tray_type, fil.get("material"))
             elif tray and tray.tray_type:
                 state = f"{tray.sub_brands or ''} {tray.tray_type}".strip()
                 attrs = {"source": "printer", "material": tray.tray_type, "color": tray.color, "remaining_g": None if tray.remain < 0 else round(tray.remain / 100 * (tray.tray_weight or 1000)),
@@ -376,6 +386,9 @@ class Collector:
             else:
                 state, attrs = "prázdný", {"source": "printer", "active": False}
             self.pub.publish_value(f"slot_{slot}", state, attrs)
+            mismatches.append({"slot": slot, "printer": attrs.get("printer_type"), "spool": state.lstrip("⚠ ")}) if attrs.get("mismatch") else None
+        self.pub.publish_value("slot_mismatch", "on" if mismatches else "off",
+                               {"slots": mismatches, "hint": "Tiskárna hlásí u slotu jiný materiál než cívka přiřazená ve SpoolmanSync – přehoď přiřazení, jinak se spotřeba odečte ze špatné cívky."})
 
     def _publish_status(self):
         st = self.health()

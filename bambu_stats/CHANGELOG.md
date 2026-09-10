@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0 - 2026-09-10
+- Detekce neshody civky: kdyz tiskarna hlasi u slotu jiny material nez civka prirazena ve Spoolmanu, slot dostane ⚠
+  a entita slot_mismatch prepne na on (automatizace posle push). Brani odectu z chybne civky.
+
 ## 0.6.1 - 2026-09-10
 - Historie vymen silikagelu se doplni i z drive zaznamenaneho casu (pred 0.6.0).
 
