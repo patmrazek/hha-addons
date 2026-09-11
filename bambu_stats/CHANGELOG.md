@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1 - 2026-09-12
+- Atributy u celkoveho filamentu se konecne publikuji (klic byl total_filament_attrs misto total_filament_kg_attrs):
+  podil odhadu, zdroje, evidovane vs. neevidovane kg.
+
 ## 0.9.0 - 2026-09-12
 - Celkova spotreba a utrata za filament zahrnuji i to, co ubylo z civek mimo evidovane tisky (starsi tisky pred
   zavedenim add-onu). Pocita se ze Spoolmanu: ubytek civky minus odecty nasich session. Nove entity

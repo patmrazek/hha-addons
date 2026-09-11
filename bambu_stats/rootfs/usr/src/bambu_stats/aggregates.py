@@ -140,10 +140,9 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     out["total_cost_attrs"] = {"by_material": {k: round(v) for k, v in cost_by_mat.items()},
                                "tracked": round(tracked_cost), "untracked": round(base_cost),
                                "prices_per_kg": prices or {}, "note": "podle nastavených cen za kg (options add-onu), hmotnost = odhad ze sliceru"}
-    out["total_filament_attrs"] = {"estimated_share_pct": round(100 * est_g / total_g, 1) if total_g else 0,
+    out["total_filament_kg_attrs"] = {"estimated_share_pct": round(100 * est_g / total_g, 1) if total_g else 0,
                                    "sources": _count_by(fil_rows, "source"),
                                    "tracked_kg": round(total_g / 1000, 3), "untracked_kg": round(base_g / 1000, 3)}
-    out["total_cost_attrs_extra"] = {"tracked": round(tracked_cost), "untracked": round(base_cost)}
     by_mat = {g: 0.0 for g in MATERIAL_GROUPS}
     by_mat["other"] = 0.0
     by_mat_30 = {k: 0.0 for k in by_mat}
