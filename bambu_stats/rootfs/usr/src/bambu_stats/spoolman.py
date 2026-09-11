@@ -32,9 +32,9 @@ class Spoolman:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode() or "null")
 
-    def spools(self) -> list[dict]:
+    def spools(self, include_archived: bool = False) -> list[dict]:
         try:
-            return self._req("/spool?allow_archived=false") or []
+            return self._req(f"/spool?allow_archived={'true' if include_archived else 'false'}") or []
         except (urllib.error.URLError, OSError, ValueError) as e:
             LOG.debug("Spoolman nedostupný: %s", e)
             return []
@@ -57,6 +57,15 @@ class Spoolman:
             return None
         found.sort(key=lambda s: (s.get("first_used") or "", s.get("last_used") or "", s.get("registered") or ""), reverse=True)
         return found[0]
+
+    @staticmethod
+    def used_g(spool: dict) -> float:
+        """Kolik už z cívky ubylo – Spoolman si to vede sám (jinak dopočet z počáteční hmotnosti)."""
+        used = spool.get("used_weight")
+        if used is None:
+            init = spool.get("initial_weight") or (spool.get("filament") or {}).get("weight") or 0
+            used = float(init) - float(spool.get("remaining_weight") or 0)
+        return max(0.0, float(used))
 
     @staticmethod
     def price_per_kg(spool: dict) -> float | None:

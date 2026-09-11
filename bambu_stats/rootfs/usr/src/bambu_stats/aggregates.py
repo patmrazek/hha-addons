@@ -87,7 +87,10 @@ def humidity_series(db, serial: str, now: float, tz, changes: list[int] | None =
     }
 
 
-def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None = None, prices: dict | None = None) -> dict:
+def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None = None, prices: dict | None = None,
+            baseline: dict | None = None) -> dict:
+    """`baseline` = spotřeba/útrata ze cívek, kterou nezaznamenaly tiskové session (dřívější tisky) –
+    {material_group: {"g": …, "cost": …, "spools": [...]}} ze `Collector.spoolman_baseline()`."""
     now_i = int(now)
     sessions = db.query("SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL ORDER BY ended_ts", (serial,))
     fil_rows = db.query("""SELECT f.*, s.ended_ts FROM session_filaments f JOIN sessions s ON s.id=f.session_id
@@ -116,16 +119,31 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     # filament celkem, podle materiálu, podle slotu
     total_g = sum(r["used_g"] or 0 for r in fil_rows)
     est_g = sum(r["used_g"] or 0 for r in fil_rows if r["is_estimate"])
-    out["total_filament_kg"] = round(total_g / 1000, 3)
-    out["total_cost"] = round(sum(r["cost"] for r in fil_rows), 0)
+    base = baseline or {}
+    base_g = sum(b["g"] for b in base.values())
+    base_cost = sum(b["cost"] for b in base.values())
+    tracked_cost = sum(r["cost"] for r in fil_rows)
+    out["total_filament_kg"] = round((total_g + base_g) / 1000, 3)
+    out["total_cost"] = round(tracked_cost + base_cost, 0)
+    out["filament_untracked_kg"] = round(base_g / 1000, 3)
+    out["cost_untracked"] = round(base_cost, 0)
+    out["filament_untracked_kg_attrs"] = {"note": "spotřeba z cívek mimo evidované tisky (starší tisky, ruční odvin)",
+                                          "by_material": {k: v["g"] for k, v in sorted(base.items())},
+                                          "spools": [sp for b in base.values() for sp in b.get("spools", [])]}
+    out["cost_untracked_attrs"] = {"by_material": {k: v["cost"] for k, v in sorted(base.items())}}
     out["prices_set"] = bool(prices)
     cost_by_mat: dict[str, float] = {}
     for r in fil_rows:
         cost_by_mat[r["material_group"] or "other"] = cost_by_mat.get(r["material_group"] or "other", 0) + r["cost"]
+    for g, b in base.items():
+        cost_by_mat[g] = cost_by_mat.get(g, 0) + b["cost"]
     out["total_cost_attrs"] = {"by_material": {k: round(v) for k, v in cost_by_mat.items()},
+                               "tracked": round(tracked_cost), "untracked": round(base_cost),
                                "prices_per_kg": prices or {}, "note": "podle nastavených cen za kg (options add-onu), hmotnost = odhad ze sliceru"}
     out["total_filament_attrs"] = {"estimated_share_pct": round(100 * est_g / total_g, 1) if total_g else 0,
-                                   "sources": _count_by(fil_rows, "source")}
+                                   "sources": _count_by(fil_rows, "source"),
+                                   "tracked_kg": round(total_g / 1000, 3), "untracked_kg": round(base_g / 1000, 3)}
+    out["total_cost_attrs_extra"] = {"tracked": round(tracked_cost), "untracked": round(base_cost)}
     by_mat = {g: 0.0 for g in MATERIAL_GROUPS}
     by_mat["other"] = 0.0
     by_mat_30 = {k: 0.0 for k in by_mat}
@@ -142,11 +160,13 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
             slot_attrs[key] = {"last_material": r["material"], "last_color": r["color_hex"]}
         else:
             by_slot["unmapped"] = by_slot.get("unmapped", 0) + (r["used_g"] or 0)
+    for g, b in base.items():
+        by_mat[g] = by_mat.get(g, 0) + b["g"]
     for g, v in by_mat.items():
         out[f"filament_{g.lower()}_kg"] = round(v / 1000, 3)
     out["filament_by_slot_kg"] = {k: round(v / 1000, 3) for k, v in sorted(by_slot.items())}
     out["filament_by_slot_attrs"] = slot_attrs
-    if by_mat and total_g:
+    if by_mat and (total_g or base_g):
         top = max(by_mat.items(), key=lambda kv: kv[1])
         out["most_used_material"] = top[0]
         out["most_used_material_attrs"] = {"grams_all_time": {k: round(v) for k, v in by_mat.items()},
@@ -276,7 +296,7 @@ def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz, db=None, se
     weekly = bucket_rows(104)
     first_month = None
     if known:
-        first_month = _local(min(s["ended_ts"] for s in known), tz).replace(day=1)
+        first_month = _local(min(s["ended_ts"] for s in known), tz).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     months: list[str] = []
     m = (first_month or today.replace(day=1))
     while m <= today.replace(day=1):

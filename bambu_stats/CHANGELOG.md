@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.0 - 2026-09-12
+- Celkova spotreba a utrata za filament zahrnuji i to, co ubylo z civek mimo evidovane tisky (starsi tisky pred
+  zavedenim add-onu). Pocita se ze Spoolmanu: ubytek civky minus odecty nasich session. Nove entity
+  filament_untracked_kg a cost_untracked, rozpad v atributech total_filament_kg / total_cost.
+
 ## 0.8.1 - 2026-09-10
 - OPRAVA: resolve filamentu bezel soubezne z planovace i z retry marku a odecet ze civky se provedl dvakrat.
   Nove je resolve serializovany zamkem.

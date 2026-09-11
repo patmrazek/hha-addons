@@ -405,6 +405,36 @@ class Collector:
         self.pub.publish_value("slot_mismatch", "on" if mismatches else "off",
                                {"slots": mismatches, "hint": "Tiskárna hlásí u slotu jiný materiál než cívka přiřazená ve SpoolmanSync – přehoď přiřazení, jinak se spotřeba odečte ze špatné cívky."})
 
+    def spoolman_baseline(self) -> dict:
+        """Spotřeba a útrata, kterou add-on nezaznamenal (tisky před jeho zavedením, jiné tiskárny, ruční odvin).
+
+        Bere se ze Spoolmanu: co z cívky ubylo, mínus to, co z ní odečetly naše tiskové session. Počítá se za běhu,
+        takže se samo srovná, když se cívka doplní nebo opraví. Cena podle ceny konkrétní cívky.
+        """
+        if not (self.spoolman and self.spoolman.enabled):
+            return {}
+        tracked: dict[int, float] = {}
+        for r in self.db.query("SELECT spool_id, SUM(spool_deducted_g) g FROM session_filaments WHERE spool_id IS NOT NULL GROUP BY spool_id"):
+            tracked[r["spool_id"]] = r["g"] or 0
+        out: dict[str, dict] = {}
+        spools = self.spoolman.spools(include_archived=True)
+        for sp in spools:
+            fil = sp.get("filament") or {}
+            hist = self.spoolman.used_g(sp) - tracked.get(sp["id"], 0)
+            if hist <= 0.5:
+                continue
+            g = material_group(fil.get("material"))
+            per_kg = self.spoolman.price_per_kg(sp) or 0
+            b = out.setdefault(g, {"g": 0.0, "cost": 0.0, "spools": []})
+            b["g"] += hist
+            b["cost"] += hist / 1000 * per_kg
+            b["spools"].append({"id": sp["id"], "name": f"{((fil.get('vendor') or {}).get('name') or '')} {fil.get('name') or ''}".strip(),
+                                "g": round(hist), "kc": round(hist / 1000 * per_kg)})
+        for b in out.values():
+            b["g"] = round(b["g"], 1)
+            b["cost"] = round(b["cost"], 1)
+        return out
+
     def _publish_status(self):
         st = self.health()
         self.pub.publish_value("collector_status", "ok" if st["ok"] else "degraded", st)
@@ -413,7 +443,8 @@ class Collector:
         try:
             with self._lock:
                 open_sess = self.sm.session.to_row() if self.sm.session else None
-            stats = aggregates.compute(self.db, self.serial, time.time(), self.tz, open_sess, self.settings.prices)
+            baseline = self.spoolman_baseline()
+            stats = aggregates.compute(self.db, self.serial, time.time(), self.tz, open_sess, self.settings.prices, baseline)
             stats.update(aggregates.maintenance(self.db, self.serial, time.time(), open_sess,
                                                 self.settings.maintenance_every_hours, self.settings.desiccant_every_days))
             with self._lock:
