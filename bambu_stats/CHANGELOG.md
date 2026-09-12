@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.0 - 2026-09-12
+- Zmetky: tlacitka 'Posledni tisk byl zmetek' / 'byl v poradku' (prikazy mark_defect[:<id>[:<poznamka>]], mark_ok),
+  senzor defect_prints, zmetek se nepocita do uspesnosti ani do uspesnych tisku (filament zustava spotrebovany).
+
 ## 0.9.2 - 2026-09-12
 - Kontrola filamentu porovnava zbyvajici potrebu tisku (plan minus uz odectene) se zbytkem civky. Drive se cely plan
   porovnaval s civkou uz snizenou prubeznym odectem, takze deficit vychazel prehnany.

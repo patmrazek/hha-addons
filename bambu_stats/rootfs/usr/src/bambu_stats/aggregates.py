@@ -102,13 +102,19 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     for r in fil_rows:
         cost_by_session[r["session_id"]] = cost_by_session.get(r["session_id"], 0) + r["cost"]
     known = [s for s in sessions if s["result"] in ("success", "failed", "cancelled")]
-    ok = [s for s in known if s["result"] == "success"]
+    defects = [s for s in known if s.get("quality") == "defect"]
+    # zmetek = tiskárna dojela, ale díl je k ničemu → nepočítá se mezi povedené tisky
+    ok = [s for s in known if s["result"] == "success" and s.get("quality") != "defect"]
     failed = [s for s in known if s["result"] == "failed"]
     cancelled = [s for s in known if s["result"] == "cancelled"]
 
     out: dict = {
         "total_prints": len(known),
         "successful_prints": len(ok),
+        "defect_prints": len(defects),
+        "defect_prints_attrs": {"note": "tisk doběhl, ale díl je zmetek (označeno ručně)", "filament_g": round(sum(s["filament_g"] or 0 for s in defects), 1),
+                                "prints": [{"name": (s["subtask_name"] or "?")[:40], "ended": _iso(s["ended_ts"], tz), "g": s["filament_g"],
+                                            "note": s.get("quality_note")} for s in defects[-10:]]},
         "failed_prints": len(failed),
         "cancelled_prints": len(cancelled),
         "success_rate": round(100 * len(ok) / len(known), 1) if known else None,
@@ -200,7 +206,7 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
 
     # poslední tisk + historie
     last = sessions[-1] if sessions else None
-    out["last_print"] = (last["result"] or "unknown") if last else "none"
+    out["last_print"] = ("defect" if (last and last.get("quality") == "defect") else (last["result"] or "unknown")) if last else "none"
     out["last_print_attrs"] = _session_attrs(db, last, tz) if last else {}
     if last:
         out["last_print_attrs"]["cost"] = round(cost_by_session.get(last["id"], 0), 1)
@@ -210,7 +216,8 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
                      "e": _iso(s["ended_ts"], tz), "d": round((s["duration_s"] or 0) / 60), "r": s["result"],
                      "g": round(s["filament_g"], 1) if s["filament_g"] is not None else None,
                      "m": _materials(db, s["id"]), "src": s["filament_source"], "est": s["filament_is_estimate"],
-                     "c": round(cost_by_session.get(s["id"], 0)), "o": s.get("origin"), "img": s.get("cover")})
+                     "c": round(cost_by_session.get(s["id"], 0)), "o": s.get("origin"), "img": s.get("cover"),
+                     "q": s.get("quality"), "qn": s.get("quality_note")})
     out["print_history"] = len(sessions)
     out["print_history_attrs"] = {"history": hist}
 
@@ -219,7 +226,7 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     for s in known:
         n = (s["subtask_name"] or "?").strip()
         m = by_model.setdefault(n, {"name": n[:40], "n": 0, "ok": 0, "min": 0.0, "g": 0.0, "c": 0.0, "last": 0, "img": None})
-        m["n"] += 1; m["ok"] += int(s["result"] == "success"); m["min"] += (s["duration_s"] or 0) / 60
+        m["n"] += 1; m["ok"] += int(s["result"] == "success" and s.get("quality") != "defect"); m["min"] += (s["duration_s"] or 0) / 60
         m["g"] += s["filament_g"] or 0; m["c"] += cost_by_session.get(s["id"], 0); m["last"] = max(m["last"], s["ended_ts"] or 0)
         if s.get("cover"):
             m["img"] = s["cover"]
@@ -274,7 +281,7 @@ def _session_attrs(db, s: dict, tz) -> dict:
                        "m": f["used_m"], "source": f["source"], "estimate": bool(f["is_estimate"])} for f in fils],
         "print_error": s["print_error"], "fail_reason": s["fail_reason"], "hms_serious": s["hms_serious_count"],
         "print_type": s["print_type"], "nozzle": f"{s['nozzle_type']} {s['nozzle_diameter']}".strip(), "speed_level": s["spd_lvl"],
-        "origin": s.get("origin"), "cover": s.get("cover"),
+        "origin": s.get("origin"), "cover": s.get("cover"), "quality": s.get("quality"), "quality_note": s.get("quality_note"),
     }
 
 

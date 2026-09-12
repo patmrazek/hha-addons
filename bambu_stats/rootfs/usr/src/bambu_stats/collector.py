@@ -97,6 +97,22 @@ class Collector:
                     LOG.info("session %s: slot nastaven na %s a prepocitan", row["id"][-8:], tray)
             except Exception:
                 LOG.exception("assign_slot selhal")
+        elif cmd.startswith("mark_defect") or cmd.startswith("mark_ok"):
+            # mark_defect[:<konec_id>[:<poznámka>]] – tisk doběhl, ale díl je k ničemu (warp, ucpaná tryska…).
+            # Filament zůstává spotřebovaný, jen se to nepočítá jako povedený tisk.
+            parts = cmd.split(":", 2)
+            quality = "defect" if parts[0] == "mark_defect" else "ok"
+            sid_suffix = parts[1] if len(parts) > 1 and parts[1] else None
+            note = parts[2] if len(parts) > 2 else None
+            row = (next(iter(self.db.query("SELECT * FROM sessions WHERE id LIKE ?", (f"%{sid_suffix}",))), None) if sid_suffix
+                   else self.db.last_closed_session(self.serial))
+            if row:
+                self.db.update_session(row["id"], quality=quality, quality_note=note)
+                LOG.info("session %s označena jako %s%s", row["id"][-8:], quality, f" ({note})" if note else "")
+                self._stats_dirty = True
+                self.publish_stats(force=True)
+            else:
+                LOG.warning("mark_defect: session nenalezena (%s)", sid_suffix)
         elif cmd in ("maintenance_done", "desiccant_changed"):
             now_ts = int(time.time())
             self.db.set_meta(f"{cmd}_ts_{self.serial}", now_ts)

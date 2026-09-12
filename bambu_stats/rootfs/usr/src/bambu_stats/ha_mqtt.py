@@ -20,6 +20,9 @@ COMPONENTS: dict[str, tuple] = {
     "successful_prints": ("Úspěšné tisky", None, None, "total", "mdi:check-circle", "sensor"),
     "failed_prints": ("Neúspěšné tisky", None, None, "total", "mdi:alert-circle", "sensor"),
     "cancelled_prints": ("Zrušené tisky", None, None, "total", "mdi:cancel", "sensor"),
+    "defect_prints": ("Zmetky (dotištěno, ale k ničemu)", None, None, "total", "mdi:thumb-down", "sensor"),
+    "mark_defect": ("Poslední tisk byl zmetek", None, None, None, "mdi:thumb-down-outline", "button"),
+    "mark_ok": ("Poslední tisk byl v pořádku", None, None, None, "mdi:thumb-up-outline", "button"),
     "success_rate": ("Úspěšnost", "%", None, "measurement", "mdi:percent", "sensor"),
     "total_print_hours": ("Hodiny tisku celkem", "h", "duration", "total", "mdi:clock-outline", "sensor"),
     "total_active_hours": ("Hodiny aktivního tisku", "h", "duration", "total", "mdi:clock-fast", "sensor"),
@@ -78,7 +81,7 @@ COMPONENTS: dict[str, tuple] = {
     "refetch_3mf": ("Znovu načíst 3MF", None, None, None, "mdi:file-refresh", "button"),
 }
 CURRENCY_SYMBOLS = {"CZK": "Kč", "EUR": "€", "USD": "$", "GBP": "£", "PLN": "zł"}
-ATTR_KEYS = {"total_filament_kg", "filament_untracked_kg", "cost_untracked", "most_used_material", "last_print", "print_history", "usage", "current_session",
+ATTR_KEYS = {"defect_prints", "total_filament_kg", "filament_untracked_kg", "cost_untracked", "most_used_material", "last_print", "print_history", "usage", "current_session",
              "current_filament_g", "current_cost", "total_cost", "collector_status", "slot_1", "slot_2", "slot_3", "slot_4",
              "filament_check", "hours_since_maintenance", "days_since_desiccant", "models", "ams_humidity_history",
              "slot_mismatch"}
