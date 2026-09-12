@@ -305,16 +305,21 @@ class Collector:
         for f in fils:
             sp = spools.get(f.get("spool_id"))
             need = round(f.get("used_g") or 0, 1)
+            # co z cívky ubude ještě do konce tisku: plán mínus to, co už z ní tisk odečetl
+            # (zbývající hmotnost cívky je průběžným odečtem snížená, porovnávat ji s celým plánem by lhalo)
+            left = round(max(0.0, need - (f.get("spool_deducted_g") or 0)), 1)
             if sp is None:
-                slots.append({"slot": (f["tray_global"] or 0) % 4 + 1 if f.get("tray_global") is not None else None, "material": f.get("material"), "need_g": need, "remaining_g": None, "status": "unknown"})
+                slots.append({"slot": (f["tray_global"] or 0) % 4 + 1 if f.get("tray_global") is not None else None, "material": f.get("material"),
+                              "need_g": need, "need_left_g": left, "remaining_g": None, "status": "unknown"})
                 state = "unknown" if state == "ok" else state
                 continue
             rem = round(sp.get("remaining_weight") or 0)
-            st = "low" if rem < need * 1.05 else "ok"
+            st = "low" if rem < left * 1.05 else "ok"
             if st == "low":
                 state = "low"
             slots.append({"slot": f["tray_global"] % 4 + 1, "spool": f"{((sp.get('filament') or {}).get('vendor') or {}).get('name', '')} {(sp.get('filament') or {}).get('name', '')}".strip(),
-                          "material": f.get("material"), "need_g": need, "remaining_g": rem, "deficit_g": round(max(0, need - rem)), "status": st})
+                          "material": f.get("material"), "need_g": need, "need_left_g": left, "remaining_g": rem,
+                          "deficit_g": round(max(0, left - rem)), "status": st})
         self.pub.publish_value("filament_check", state, {"session_id": sid, "name": row.get("subtask_name"), "slots": slots,
                                                          "checked": dt.datetime.now(self.tz).strftime("%Y-%m-%dT%H:%M")})
         if state == "low":

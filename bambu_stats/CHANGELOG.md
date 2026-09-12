@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.2 - 2026-09-12
+- Kontrola filamentu porovnava zbyvajici potrebu tisku (plan minus uz odectene) se zbytkem civky. Drive se cely plan
+  porovnaval s civkou uz snizenou prubeznym odectem, takze deficit vychazel prehnany.
+
 ## 0.9.1 - 2026-09-12
 - Atributy u celkoveho filamentu se konecne publikuji (klic byl total_filament_attrs misto total_filament_kg_attrs):
   podil odhadu, zdroje, evidovane vs. neevidovane kg.
