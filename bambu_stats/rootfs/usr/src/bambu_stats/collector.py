@@ -404,8 +404,9 @@ class Collector:
                 vendor = (fil.get("vendor") or {}).get("name") or ""
                 state = f"{vendor} {fil.get('name') or ''}".strip()[:255]
                 # tiskárna hlásí jiný materiál než přiřazená cívka → někdo vyměnil cívku a nepřehodil ji ve SpoolmanSync
-                mismatch = bool(tray and tray.tray_type and fil.get("material")
-                                and material_group(tray.tray_type) != material_group(fil.get("material")))
+                known_type = (tray.tray_type or "").strip() if tray else ""
+                mismatch = bool(known_type and known_type not in ("?", "Empty", "Unknown") and fil.get("material")
+                                and material_group(known_type) != material_group(fil.get("material")))
                 attrs = {"source": "spoolman", "spool_id": sp["id"], "material": fil.get("material"), "color": ("#" + fil["color_hex"]) if fil.get("color_hex") else (tray.color if tray else None),
                          "remaining_g": round(sp.get("remaining_weight") or 0), "used_g": round(sp.get("used_weight") or 0),
                          "price_per_kg": self.spoolman.price_per_kg(sp), "location": sp.get("location"), "comment": sp.get("comment"),

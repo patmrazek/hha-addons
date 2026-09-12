@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.10.1 - 2026-09-12
+- Neznamy obsah slotu ('?', Empty) uz nehlasi neshodu civky (tiskarna slot necte behem tisku / refill bez RFID).
+
 ## 0.10.0 - 2026-09-12
 - Zmetky: tlacitka 'Posledni tisk byl zmetek' / 'byl v poradku' (prikazy mark_defect[:<id>[:<poznamka>]], mark_ok),
   senzor defect_prints, zmetek se nepocita do uspesnosti ani do uspesnych tisku (filament zustava spotrebovany).
