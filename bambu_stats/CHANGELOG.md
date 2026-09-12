@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0 - 2026-09-12
+- Kdyz je Spoolman nedostupny (jina lokalita, vypadek VPN), spotreba se drzi lokalne a po obnoveni spojeni se
+  automaticky doucuje (kazdych 5 min). Novy senzor spoolman_pending ukazuje, kolik tisku a gramu ceka.
+
 ## 0.11.0 - 2026-09-12
 - Rezim 'jen synchronizace': bez printer_host/access_code instance nesleduje tiskarnu, jen stahuje sdilenou historii
   z git repa a publikuje statistiky. Pro lokalitu, kde tiskarna prave nestoji.

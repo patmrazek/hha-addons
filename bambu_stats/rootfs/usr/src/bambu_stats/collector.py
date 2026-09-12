@@ -434,6 +434,49 @@ class Collector:
         self.pub.publish_value("slot_mismatch", "on" if mismatches else "off",
                                {"slots": mismatches, "hint": "Tiskárna hlásí u slotu jiný materiál než cívka přiřazená ve SpoolmanSync – přehoď přiřazení, jinak se spotřeba odečte ze špatné cívky."})
 
+    def pending_spool_sessions(self, days: int = 120) -> list[dict]:
+        """Dokončené tisky, které se ještě nestihly odečíst ze cívky (Spoolman byl nedostupný)."""
+        since = int(time.time()) - days * 86400
+        return self.db.query("""SELECT s.id, s.subtask_name, s.ended_ts, s.filament_g,
+                                       SUM(COALESCE(f.used_g, 0) - COALESCE(f.spool_deducted_g, 0)) AS pending_g
+                                FROM sessions s JOIN session_filaments f ON f.session_id = s.id
+                                WHERE s.printer_serial = ? AND s.ended_ts IS NOT NULL AND s.ended_ts >= ?
+                                  AND COALESCE(f.used_g, 0) - COALESCE(f.spool_deducted_g, 0) > 0.5
+                                  AND s.manual_override IS NOT 1
+                                GROUP BY s.id ORDER BY s.ended_ts""", (self.serial, since))
+
+    def flush_pending_spools(self):
+        """Doúčtuje do Spoolmanu spotřebu tisků, které proběhly, když byl nedostupný (jiná lokalita, výpadek VPN)."""
+        if not (self.spoolman and self.spoolman.enabled):
+            return
+        rows = self.pending_spool_sessions()
+        self.pub.publish_value("spoolman_pending", len(rows),
+                               {"grams": round(sum(r["pending_g"] or 0 for r in rows), 1),
+                                "spoolman": self.settings.spoolman_url, "reachable": self.spoolman.reachable,
+                                "error": self.spoolman.last_error,
+                                "prints": [{"name": (r["subtask_name"] or "?")[:40], "ended": dt.datetime.fromtimestamp(r["ended_ts"], self.tz).strftime("%Y-%m-%dT%H:%M"),
+                                            "g": round(r["pending_g"], 1)} for r in rows[-15:]]})
+        if not rows or self.spoolman.reachable is False:
+            return
+        done = 0
+        for r in rows:
+            row = self.db.get_session(r["id"])
+            if not row:
+                continue
+            with self._resolve_lock:
+                try:
+                    self.filament.resolve(row, final=True)
+                    done += 1
+                except Exception:
+                    LOG.exception("doúčtování session %s selhalo", r["id"][-8:])
+            if self.spoolman.reachable is False:
+                break
+        if done:
+            LOG.info("doúčtováno %d tisků do Spoolmanu", done)
+            self._stats_dirty = True
+            self.publish_stats(force=True)
+            self.flush_pending_spools()
+
     def spoolman_baseline(self) -> dict:
         """Spotřeba a útrata, kterou add-on nezaznamenal (tisky před jeho zavedením, jiné tiskárny, ruční odvin).
 
@@ -516,6 +559,8 @@ class Collector:
                 "messages": self.mqtt.msg_count, "ha_mqtt_connected": self.pub.connected, "db_size_mb": self.db.size_mb(),
                 "open_session": sess.id if sess else None, "open_session_name": sess.subtask_name if sess else None,
                 "ha_api": self.ha.available,
+                "spoolman": (None if not self.spoolman else {"url": self.settings.spoolman_url, "reachable": self.spoolman.reachable,
+                                                            "error": self.spoolman.last_error}),
                 "sync": ({"instance": self.sync.instance, "last_ok": int(self.sync.last_ok) if self.sync.last_ok else None,
                           "error": self.sync.last_error, "imported_total": self.sync.imported_total} if self.sync else None)}
 
@@ -547,6 +592,9 @@ class Collector:
                 if self._stats_dirty or now - self._last_stats >= STATS_EVERY_S:
                     self.publish_stats()
                 # přiřazení cívek se mění ve Spoolmanu (mimo tiskárnu) → kontrolovat pravidelně, publikuje se jen změna
+                if self.spoolman and now - getattr(self, "_last_flush", 0) >= 300:
+                    self._last_flush = now
+                    self.flush_pending_spools()
                 if self.live and now - getattr(self, "_last_slots", 0) >= 60:
                     self._last_slots = now
                     self.publish_slots()

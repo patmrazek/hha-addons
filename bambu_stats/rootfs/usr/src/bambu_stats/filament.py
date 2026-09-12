@@ -209,7 +209,7 @@ class FilamentResolver:
             prev = previous.get(r["tray_global"]) or {}
             r["spool_deducted_g"] = prev.get("spool_deducted_g") or 0
             r["spool_id"], r["spool_price_per_kg"] = prev.get("spool_id"), prev.get("spool_price_per_kg")
-            if self.spoolman and self.spoolman.enabled and r["tray_global"] is not None:
+            if self.spoolman and self.spoolman.enabled and r["tray_global"] is not None and self.spoolman.reachable is not False:
                 tag = (trays_by_global.get(r["tray_global"]) or {}).get("tray_uuid") or ""
                 sp = self.spoolman.spool_for_tray(r["tray_global"], tag)
                 if sp:

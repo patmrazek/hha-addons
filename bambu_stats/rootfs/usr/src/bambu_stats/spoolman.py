@@ -18,6 +18,8 @@ LOG = logging.getLogger("spoolman")
 
 class Spoolman:
     def __init__(self, base_url: str):
+        self.reachable: bool | None = None      # None = ještě se nezkoušelo
+        self.last_error: str | None = None
         self.base = base_url.rstrip("/")
         if self.base and not self.base.endswith("/api/v1"):
             self.base += "/api/v1"
@@ -34,9 +36,15 @@ class Spoolman:
 
     def spools(self, include_archived: bool = False) -> list[dict]:
         try:
-            return self._req(f"/spool?allow_archived={'true' if include_archived else 'false'}") or []
+            out = self._req(f"/spool?allow_archived={'true' if include_archived else 'false'}") or []
+            if self.reachable is False:
+                LOG.info("Spoolman je zase dostupný (%s)", self.base)
+            self.reachable, self.last_error = True, None
+            return out
         except (urllib.error.URLError, OSError, ValueError) as e:
-            LOG.debug("Spoolman nedostupný: %s", e)
+            if self.reachable is not False:
+                LOG.warning("Spoolman nedostupný (%s): %s – spotřeba se zapisuje lokálně a doúčtuje se, až bude spojení", self.base, e)
+            self.reachable, self.last_error = False, str(e)[:120]
             return []
 
     def spool_for_tray(self, tray_global: int | None, tag_uid: str | None = None) -> dict | None:
