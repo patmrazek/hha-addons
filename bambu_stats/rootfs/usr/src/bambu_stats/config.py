@@ -76,15 +76,15 @@ def load() -> Settings:
     if opts_path.exists():
         opts = json.loads(opts_path.read_text())
     # jednoduchá varianta (jedna tiskárna, plochá pole – v UI add-onu spolehlivější než seznam)
-    if opts.get("printer_host") and opts.get("printer_serial") and opts.get("access_code"):
+    if opts.get("printer_serial"):   # host a access_code jsou volitelné – bez nich jede instance jen jako čtečka sdílené historie
         s.printers.append(PrinterConfig(
-            name=opts.get("printer_name") or "Bambu", host=opts["printer_host"], serial=opts["printer_serial"],
-            access_code=opts["access_code"], ha_weight_entity=opts.get("ha_weight_entity") or "",
+            name=opts.get("printer_name") or "Bambu", host=opts.get("printer_host") or "", serial=opts["printer_serial"],
+            access_code=opts.get("access_code") or "", ha_weight_entity=opts.get("ha_weight_entity") or "",
             ha_length_entity=opts.get("ha_length_entity") or ""))
     for p in opts.get("printers") or []:
-        if p.get("host") and p.get("serial") and p.get("access_code"):
+        if p.get("serial"):
             s.printers.append(PrinterConfig(
-                name=p.get("name") or "Bambu", host=p["host"], serial=p["serial"], access_code=p["access_code"],
+                name=p.get("name") or "Bambu", host=p.get("host") or "", serial=p["serial"], access_code=p.get("access_code") or "",
                 ha_weight_entity=p.get("ha_weight_entity") or "", ha_length_entity=p.get("ha_length_entity") or ""))
     if not s.printers and os.environ.get("BAMBU_HOST"):
         s.printers.append(PrinterConfig(

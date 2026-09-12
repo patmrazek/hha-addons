@@ -42,8 +42,11 @@ class Collector:
             LOG.info("nalezena otevřená session %s (%s, %s %%) – pokusím se navázat", open_row["id"], open_row.get("subtask_name"), open_row.get("last_percent"))
         self.sm = StateMachine(self.serial, open_row, last["fingerprint"] if last else None)
         pinfo = db.get_printer(self.serial) or {}
-        self.mqtt = PrinterMQTT(printer.host, self.serial, printer.access_code, self.on_state, settings.tls_verify,
-                                pinned_fingerprint=pinfo.get("tls_fingerprint"), on_pin=self._on_pin, on_connection=self._on_conn)
+        # bez host/access_code (tiskárna je v jiné lokalitě) jede instance jen jako čtečka sdílené historie
+        self.live = bool(printer.host and printer.access_code)
+        self.mqtt = (PrinterMQTT(printer.host, self.serial, printer.access_code, self.on_state, settings.tls_verify,
+                                 pinned_fingerprint=pinfo.get("tls_fingerprint"), on_pin=self._on_pin, on_connection=self._on_conn)
+                     if self.live else None)
         self.pub = HAPublisher(settings.mqtt, prefix, self.serial, printer.name, on_command=self.on_command, currency=settings.currency)
         self._lock = threading.Lock()
         self._resolve_lock = threading.Lock()   # resolve smí běžet jen jednou naráz (jinak dvojí odečet ze cívky)
@@ -63,11 +66,15 @@ class Collector:
     # --- start / stop --------------------------------------------------------------
     def start(self):
         self.pub.start()
-        self.mqtt.start()
+        if self.mqtt:
+            self.mqtt.start()
+        else:
+            LOG.info("režim jen synchronizace: tiskárna %s se v této lokalitě nesleduje", self.serial)
         threading.Thread(target=self._scheduler, name=f"sched-{self.serial[-4:]}", daemon=True).start()
 
     def stop(self):
-        self.mqtt.stop()
+        if self.mqtt:
+            self.mqtt.stop()
         self.pub.stop()
 
     # --- callbacky -----------------------------------------------------------------------
@@ -494,6 +501,12 @@ class Collector:
             LOG.exception("výpočet statistik selhal")
 
     def health(self) -> dict:
+        if not self.mqtt:   # jen sync – zdraví určuje poslední úspěšná synchronizace
+            ok = bool(self.sync and self.sync.last_ok and time.time() - self.sync.last_ok < 3 * self.settings.sync_interval_min * 60)
+            return {"ok": ok, "version": __import__("bambu_stats").__version__, "printer": self.printer.name, "mode": "sync_only",
+                    "printer_mqtt_connected": False, "ha_mqtt_connected": self.pub.connected, "db_size_mb": self.db.size_mb(),
+                    "sync": ({"instance": self.sync.instance, "last_ok": int(self.sync.last_ok) if self.sync.last_ok else None,
+                              "error": self.sync.last_error, "imported_total": self.sync.imported_total} if self.sync else None)}
         age = (time.monotonic() - self.mqtt.last_msg_ts) if self.mqtt.last_msg_ts else None
         ok = self.mqtt.connected and age is not None and age < 120
         with self._lock:
@@ -534,7 +547,7 @@ class Collector:
                 if self._stats_dirty or now - self._last_stats >= STATS_EVERY_S:
                     self.publish_stats()
                 # přiřazení cívek se mění ve Spoolmanu (mimo tiskárnu) → kontrolovat pravidelně, publikuje se jen změna
-                if now - getattr(self, "_last_slots", 0) >= 60:
+                if self.live and now - getattr(self, "_last_slots", 0) >= 60:
                     self._last_slots = now
                     self.publish_slots()
                 self._publish_status()
@@ -546,7 +559,7 @@ class Collector:
                     LOG.info("údržba: smazáno %d vzorků, WAL checkpoint, DB %.1f MB", n, self.db.size_mb())
                     self.export_csv()
                     self._stats_dirty = True
-                if self.mqtt.connected:
+                if self.mqtt and self.mqtt.connected:
                     self.db.touch_printer(self.serial, ip=self.printer.host)
             except Exception:
                 LOG.exception("chyba plánovače")

@@ -23,9 +23,11 @@ def main() -> int:
     for p in settings.printers:
         log.REDACT.add(p.access_code)
     log.REDACT.add(settings.supervisor_token, settings.mqtt.password, settings.sync_token)
-    LOG.info("bambu_stats %s startuje, %d tiskáren, data %s", __version__, len(settings.printers), settings.data_dir)
+    live = sum(1 for p in settings.printers if p.host and p.access_code)
+    LOG.info("bambu_stats %s startuje, %d tiskáren (%d sledovaných, %d jen sync), data %s",
+             __version__, len(settings.printers), live, len(settings.printers) - live, settings.data_dir)
     if not settings.printers:
-        LOG.error("Není nakonfigurována žádná tiskárna (options → printers). Čekám, nic nedělám.")
+        LOG.error("Není vyplněné sériové číslo tiskárny (options → printer_serial). Čekám, nic nedělám.")
         while True:
             time.sleep(3600)
 

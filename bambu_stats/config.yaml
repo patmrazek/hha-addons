@@ -1,5 +1,5 @@
 name: Bambu Stats
-version: "0.10.1"
+version: "0.11.0"
 slug: bambu_stats
 description: Historie tisků, lifetime statistiky a spotřeba filamentu pro tiskárny Bambu Lab (SQLite + MQTT Discovery)
 url: https://github.com/patmrazek/hha-addons
@@ -56,9 +56,9 @@ options:
   tls_verify: tofu
 schema:
   printer_name: str
-  printer_host: str
+  printer_host: str?
   printer_serial: str
-  access_code: password
+  access_code: password?
   ha_weight_entity: str?
   ha_length_entity: str?
   printers:

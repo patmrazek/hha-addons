@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0 - 2026-09-12
+- Rezim 'jen synchronizace': bez printer_host/access_code instance nesleduje tiskarnu, jen stahuje sdilenou historii
+  z git repa a publikuje statistiky. Pro lokalitu, kde tiskarna prave nestoji.
+
 ## 0.10.1 - 2026-09-12
 - Neznamy obsah slotu ('?', Empty) uz nehlasi neshodu civky (tiskarna slot necte behem tisku / refill bez RFID).
 
