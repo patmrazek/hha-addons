@@ -34,7 +34,7 @@ class Collector:
         self.serial = printer.serial
         self.ha = HomeAssistant(settings.supervisor_token)
         self.spoolman = Spoolman(settings.spoolman_url) if settings.spoolman_url else None
-        self.filament = FilamentResolver(db, printer, self.ha, settings.data_dir / "3mf_cache", spoolman=self.spoolman)
+        self.filament = FilamentResolver(db, printer, self.ha, settings.data_dir / "3mf_cache", spoolman=self.spoolman, serial=self.serial)
         self.sampler = Sampler(self.serial)
         open_row = db.open_session_for(self.serial)
         last = db.last_closed_session(self.serial)
@@ -104,6 +104,20 @@ class Collector:
                     LOG.info("session %s: slot nastaven na %s a prepocitan", row["id"][-8:], tray)
             except Exception:
                 LOG.exception("assign_slot selhal")
+        elif cmd.startswith("set_slot:"):
+            # set_slot:<slot 1-4>:<spool_id|-> [:<popis>] – zapíše, co je teď ve slotu. Funguje i bez Spoolmanu:
+            # záznam se použije pro doúčtování tisků a po obnovení spojení se přiřazení propíše do Spoolmanu.
+            try:
+                parts = cmd.split(":", 3)
+                slot = int(parts[1]); tray = slot - 1
+                spool_id = None if parts[2] in ("-", "", "none") else int(parts[2])
+                label = parts[3] if len(parts) > 3 else None
+                self.db.set_slot_spool(self.serial, tray, spool_id, label=label, note="ručně" if spool_id else "vyjmuto")
+                LOG.info("slot %d: zapsána cívka %s%s", slot, spool_id or "žádná", f" ({label})" if label else "")
+                self.publish_slots()
+                self.flush_pending_spools()
+            except Exception:
+                LOG.exception("set_slot selhal")
         elif cmd.startswith("mark_defect") or cmd.startswith("mark_ok"):
             # mark_defect[:<konec_id>[:<poznámka>]] – tisk doběhl, ale díl je k ničemu (warp, ucpaná tryska…).
             # Filament zůstává spotřebovaný, jen se to nepočítá jako povedený tisk.
@@ -406,6 +420,13 @@ class Collector:
                 if _re.search(rf'_tray_{slot}"?$', at) or (tray and tray.tray_uuid and tray.tray_uuid.strip("0") and tag == tray.tray_uuid.upper()):
                     sp = cand
                     break
+            journal = self.db.slot_spool_at(self.serial, tg, time.time())
+            if sp is None and journal and journal.get("spool_id"):
+                state = (journal.get("label") or f"cívka #{journal['spool_id']}")[:255]
+                self.pub.publish_value(f"slot_{slot}", state, {"source": "lokální záznam", "spool_id": journal["spool_id"],
+                                                               "color": tray.color if tray else None, "material": tray.tray_type if tray else None,
+                                                               "active": bool(snap and snap.tray_now == tg), "pending_push": journal.get("pushed_ts") is None})
+                continue
             if sp:
                 fil = sp.get("filament") or {}
                 vendor = (fil.get("vendor") or {}).get("name") or ""
@@ -456,6 +477,7 @@ class Collector:
                                 "error": self.spoolman.last_error,
                                 "prints": [{"name": (r["subtask_name"] or "?")[:40], "ended": dt.datetime.fromtimestamp(r["ended_ts"], self.tz).strftime("%Y-%m-%dT%H:%M"),
                                             "g": round(r["pending_g"], 1)} for r in rows[-15:]]})
+        self.push_slot_journal()
         if not rows or self.spoolman.reachable is False:
             return
         done = 0
@@ -476,6 +498,29 @@ class Collector:
             self._stats_dirty = True
             self.publish_stats(force=True)
             self.flush_pending_spools()
+
+    def push_slot_journal(self):
+        """Přiřazení slotů zapsaná lokálně (bez Spoolmanu) propíše do Spoolmanu, jakmile je dostupný."""
+        if not (self.spoolman and self.spoolman.enabled) or self.spoolman.reachable is False:
+            return
+        pending = [r for r in self.db.slot_spools(self.serial, only_unpushed=True) if r.get("to_ts") is None]
+        if not pending:
+            return
+        spools = {x["id"]: x for x in self.spoolman.spools(include_archived=True)}
+        for rec in pending:
+            slot = (rec["tray_global"] % 4) + 1
+            tray_key = f'"P2S_{self.serial}_AMS_*_tray_{slot}"'
+            sp = spools.get(rec["spool_id"]) if rec.get("spool_id") else None
+            try:
+                if sp:
+                    at = next((x.get("extra", {}).get("active_tray") for x in spools.values()
+                               if (x.get("extra") or {}).get("active_tray", "").endswith(f'_tray_{slot}"')), None) or tray_key
+                    self.spoolman._req(f"/spool/{rec['spool_id']}", "PATCH", {"extra": {"active_tray": at}})
+                self.db.mark_slot_pushed(rec["id"])
+                LOG.info("Spoolman: slot %d = cívka %s (z lokálního deníku)", slot, rec.get("spool_id") or "—")
+            except Exception as e:
+                LOG.warning("propsání slotu %d do Spoolmanu selhalo: %s", slot, str(e)[:100])
+                return
 
     def spoolman_baseline(self) -> dict:
         """Spotřeba a útrata, kterou add-on nezaznamenal (tisky před jeho zavedením, jiné tiskárny, ruční odvin).

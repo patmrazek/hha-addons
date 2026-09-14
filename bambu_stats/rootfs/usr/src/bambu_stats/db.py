@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 LOG = logging.getLogger("db")
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -60,6 +60,11 @@ CREATE TABLE IF NOT EXISTS samples(
   wifi_signal INTEGER, tray_now INTEGER, ams_humidity INTEGER, ams_temp REAL,
   PRIMARY KEY(printer_serial, ts));
 CREATE INDEX IF NOT EXISTS samples_session ON samples(session_id, ts);
+CREATE TABLE IF NOT EXISTS slot_spools(
+  id INTEGER PRIMARY KEY, printer_serial TEXT NOT NULL, tray_global INTEGER NOT NULL,
+  spool_id INTEGER, label TEXT, note TEXT,
+  from_ts INTEGER NOT NULL, to_ts INTEGER, pushed_ts INTEGER, created_ts INTEGER);
+CREATE INDEX IF NOT EXISTS slot_spools_idx ON slot_spools(printer_serial, tray_global, from_ts);
 CREATE TABLE IF NOT EXISTS hms_events(
   id INTEGER PRIMARY KEY, printer_serial TEXT, session_id TEXT,
   code TEXT, attr INTEGER, code_raw INTEGER, module INTEGER, severity INTEGER,
@@ -296,6 +301,31 @@ class Database:
                             r["end_source"], r["print_error"], r["fail_reason"]])
         tmp.replace(path)
         return len(rows)
+
+    # --- osazení slotů (lokální deník, funguje i bez Spoolmanu) ------------------------------
+    def set_slot_spool(self, serial, tray_global, spool_id, label=None, note=None, from_ts=None):
+        now = int(from_ts or time.time())
+        with self.lock:
+            self.conn.execute("UPDATE slot_spools SET to_ts=? WHERE printer_serial=? AND tray_global=? AND to_ts IS NULL AND from_ts<=?",
+                              (now, serial, tray_global, now))
+            self.conn.execute("""INSERT INTO slot_spools(printer_serial,tray_global,spool_id,label,note,from_ts,created_ts)
+                                 VALUES(?,?,?,?,?,?,?)""", (serial, tray_global, spool_id, label, note, now, int(time.time())))
+
+    def slot_spool_at(self, serial, tray_global, ts) -> dict | None:
+        """Která cívka byla v daném slotu v daný čas (podle lokálního deníku)."""
+        with self.lock:
+            r = self.conn.execute("""SELECT * FROM slot_spools WHERE printer_serial=? AND tray_global=? AND from_ts<=?
+                                     AND (to_ts IS NULL OR to_ts>?) ORDER BY from_ts DESC LIMIT 1""",
+                                  (serial, tray_global, int(ts), int(ts))).fetchone()
+        return dict(r) if r else None
+
+    def slot_spools(self, serial, only_unpushed=False) -> list[dict]:
+        sql = "SELECT * FROM slot_spools WHERE printer_serial=?" + (" AND pushed_ts IS NULL" if only_unpushed else "") + " ORDER BY from_ts"
+        return self.query(sql, (serial,))
+
+    def mark_slot_pushed(self, rec_id):
+        with self.lock:
+            self.conn.execute("UPDATE slot_spools SET pushed_ts=? WHERE id=?", (int(time.time()), rec_id))
 
     def query(self, sql, params=()):
         with self.lock:

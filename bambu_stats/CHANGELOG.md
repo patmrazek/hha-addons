@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.0 - 2026-09-14
+- Lokalni denik osazeni slotu: prikaz set_slot:<slot>:<spool_id>[:<popis>] zapise, co je ve slotu, i kdyz je Spoolman
+  nedostupny. Pri doucovani se pouzije civka, ktera byla ve slotu v dobe tisku; po obnoveni spojeni se prirazeni
+  propise do Spoolmanu.
+
 ## 0.12.0 - 2026-09-12
 - Kdyz je Spoolman nedostupny (jina lokalita, vypadek VPN), spotreba se drzi lokalne a po obnoveni spojeni se
   automaticky doucuje (kazdych 5 min). Novy senzor spoolman_pending ukazuje, kolik tisku a gramu ceka.

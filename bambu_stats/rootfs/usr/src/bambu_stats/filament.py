@@ -36,8 +36,9 @@ def _trays(session: dict, key: str) -> list[dict]:
 
 
 class FilamentResolver:
-    def __init__(self, db, printer, ha, cache_dir: Path, spoolman=None):
+    def __init__(self, db, printer, ha, cache_dir: Path, spoolman=None, serial: str | None = None):
         self.db, self.printer, self.ha, self.spoolman = db, printer, ha, spoolman
+        self.serial = serial or getattr(printer, "serial", "")
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._attempts: dict[str, int] = {}
@@ -211,7 +212,14 @@ class FilamentResolver:
             r["spool_id"], r["spool_price_per_kg"] = prev.get("spool_id"), prev.get("spool_price_per_kg")
             if self.spoolman and self.spoolman.enabled and r["tray_global"] is not None and self.spoolman.reachable is not False:
                 tag = (trays_by_global.get(r["tray_global"]) or {}).get("tray_uuid") or ""
-                sp = self.spoolman.spool_for_tray(r["tray_global"], tag)
+                # lokální deník osazení slotů má přednost – ví, co bylo ve slotu v době tisku,
+                # i když se přiřazení ve Spoolmanu mezitím změnilo nebo nebyl dostupný
+                journal = self.db.slot_spool_at(self.serial, r["tray_global"], session.get("started_ts") or 0) if self.serial else None
+                sp = None
+                if journal and journal.get("spool_id"):
+                    sp = next((x for x in self.spoolman.spools(include_archived=True) if x["id"] == journal["spool_id"]), None)
+                if sp is None:
+                    sp = self.spoolman.spool_for_tray(r["tray_global"], tag)
                 if sp:
                     r["spool_id"] = sp["id"]
                     r["spool_price_per_kg"] = self.spoolman.price_per_kg(sp)
