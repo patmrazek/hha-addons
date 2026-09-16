@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.0 - 2026-09-17
+- set_slot umi i cas vymeny: set_slot:<slot>:<spool|->:<popis>@<ISO cas>. Dulezite, kdyz se zapisuje zpetne –
+  tisky se pak priradi civce, ktera byla ve slotu v dobe tisku.
+
 ## 0.13.2 - 2026-09-16
 - Slot ukazuje i civku zapsanou jen lokalne (bez ID ve Spoolmanu), s poznamkou 'mimo Spoolman'.
 

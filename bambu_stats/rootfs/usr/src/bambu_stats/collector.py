@@ -111,8 +111,15 @@ class Collector:
                 parts = cmd.split(":", 3)
                 slot = int(parts[1]); tray = slot - 1
                 spool_id = None if parts[2] in ("-", "", "none") else int(parts[2])
-                label = parts[3] if len(parts) > 3 else None
-                self.db.set_slot_spool(self.serial, tray, spool_id, label=label, note="ručně" if spool_id else "vyjmuto")
+                label, from_ts = (parts[3] if len(parts) > 3 else None), None
+                if label and "@" in label:      # popis@2026-09-16T12:38 – kdy se cívka opravdu vyměnila
+                    label, when = label.rsplit("@", 1)
+                    try:
+                        from_ts = int(dt.datetime.fromisoformat(when.strip()).replace(tzinfo=self.tz).timestamp())
+                    except ValueError:
+                        LOG.warning("set_slot: nečitelný čas %r, beru teď", when)
+                self.db.set_slot_spool(self.serial, tray, spool_id, label=(label or "").strip() or None,
+                                       note="ručně" if spool_id else "vyjmuto", from_ts=from_ts)
                 LOG.info("slot %d: zapsána cívka %s%s", slot, spool_id or "žádná", f" ({label})" if label else "")
                 self.publish_slots()
                 self.flush_pending_spools()
