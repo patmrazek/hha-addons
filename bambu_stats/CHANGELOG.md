@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.13.2 - 2026-09-16
+- Slot ukazuje i civku zapsanou jen lokalne (bez ID ve Spoolmanu), s poznamkou 'mimo Spoolman'.
+
 ## 0.13.1 - 2026-09-16
 - Kdyz je ve slotu civka zapsana jen lokalne (Spoolman ji jeste nezna), odecet se odlozi misto strzeni z predchozi civky.
 

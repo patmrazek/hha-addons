@@ -421,8 +421,10 @@ class Collector:
                     sp = cand
                     break
             journal = self.db.slot_spool_at(self.serial, tg, time.time())
-            if sp is None and journal and journal.get("spool_id"):
+            if sp is None and journal and (journal.get("spool_id") or journal.get("label")):
                 state = (journal.get("label") or f"cívka #{journal['spool_id']}")[:255]
+                if not journal.get("spool_id"):
+                    state = f"{state} (mimo Spoolman)"[:255]
                 self.pub.publish_value(f"slot_{slot}", state, {"source": "lokální záznam", "spool_id": journal["spool_id"],
                                                                "color": tray.color if tray else None, "material": tray.tray_type if tray else None,
                                                                "active": bool(snap and snap.tray_now == tg), "pending_push": journal.get("pushed_ts") is None})
