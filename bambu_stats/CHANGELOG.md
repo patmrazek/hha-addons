@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.13.1 - 2026-09-16
+- Kdyz je ve slotu civka zapsana jen lokalne (Spoolman ji jeste nezna), odecet se odlozi misto strzeni z predchozi civky.
+
 ## 0.13.0 - 2026-09-14
 - Lokalni denik osazeni slotu: prikaz set_slot:<slot>:<spool_id>[:<popis>] zapise, co je ve slotu, i kdyz je Spoolman
   nedostupny. Pri doucovani se pouzije civka, ktera byla ve slotu v dobe tisku; po obnoveni spojeni se prirazeni

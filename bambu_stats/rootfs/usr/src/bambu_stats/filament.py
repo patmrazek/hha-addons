@@ -218,7 +218,12 @@ class FilamentResolver:
                 sp = None
                 if journal and journal.get("spool_id"):
                     sp = next((x for x in self.spoolman.spools(include_archived=True) if x["id"] == journal["spool_id"]), None)
-                if sp is None:
+                elif journal:
+                    # ve slotu je cívka, kterou Spoolman ještě nezná (nakoupeno, když byl nedostupný) –
+                    # raději neodečítat vůbec, než strhnout spotřebu z předchozí cívky vedené ve Spoolmanu
+                    LOG.debug("slot %s: cívka bez ID ve Spoolmanu (%s), odečet čeká", r["tray_global"], journal.get("label"))
+                    sp = None
+                else:
                     sp = self.spoolman.spool_for_tray(r["tray_global"], tag)
                 if sp:
                     r["spool_id"] = sp["id"]
