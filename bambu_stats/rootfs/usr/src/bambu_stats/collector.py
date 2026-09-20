@@ -475,7 +475,7 @@ class Collector:
                                   AND s.manual_override IS NOT 1
                                 GROUP BY s.id ORDER BY s.ended_ts""", (self.serial, since))
 
-    def flush_pending_spools(self):
+    def flush_pending_spools(self, _depth: int = 0):
         """Doúčtuje do Spoolmanu spotřebu tisků, které proběhly, když byl nedostupný (jiná lokalita, výpadek VPN)."""
         if not (self.spoolman and self.spoolman.enabled):
             return
@@ -506,7 +506,11 @@ class Collector:
             LOG.info("doúčtováno %d tisků do Spoolmanu", done)
             self._stats_dirty = True
             self.publish_stats(force=True)
-            self.flush_pending_spools()
+            # Znovu jen když fronta opravdu ubyla. resolve() se u cívky bez ID ve Spoolmanu
+            # schválně neodečte, ale projde bez chyby – bez téhle pojistky se flush zacyklil
+            # a odečítal tytéž tisky pořád dokola (20. 9. 2026 vyžralo cívky 13 a 17).
+            if _depth < 5 and len(self.pending_spool_sessions()) < len(rows):
+                self.flush_pending_spools(_depth + 1)
 
     def push_slot_journal(self):
         """Přiřazení slotů zapsaná lokálně (bez Spoolmanu) propíše do Spoolmanu, jakmile je dostupný."""

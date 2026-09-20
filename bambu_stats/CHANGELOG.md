@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.1 - 2026-09-20
+
+- **Oprava:** doúčtování fronty do Spoolmanu se zacyklilo. `flush_pending_spools()` se po úspěšném
+  kole volal znovu, ale za „úspěch" považoval i tisk, u kterého se odečet schválně odložil (cívka
+  ve slotu není ve Spoolmanu). Fronta tím nikdy neubyla, rekurze běžela dál a tytéž tisky se
+  odečítaly pořád dokola – 20. 9. 2026 to vyprázdnilo cívky 13 a 17. Nově se rekurze spustí jen
+  tehdy, když fronta opravdu ubyla, a nejvýš 5×.
+
 ## 0.14.0 - 2026-09-17
 - set_slot umi i cas vymeny: set_slot:<slot>:<spool|->:<popis>@<ISO cas>. Dulezite, kdyz se zapisuje zpetne –
   tisky se pak priradi civce, ktera byla ve slotu v dobe tisku.
