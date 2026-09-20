@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.2 - 2026-09-20
+
+- **Oprava:** doúčtování do Spoolmanu se nově týká jen vlastních tisků. Tisky naimportované gitem
+  z druhé lokality (`origin` jiné instance) se přeskakují – jinak by je odečetly obě instance a
+  filament by ze cívky zmizel dvakrát. Platí pravidlo: do Spoolmanu zapisuje ta instance, u které
+  tiskárna fyzicky stojí.
+
+
 ## 0.14.1 - 2026-09-20
 
 - **Oprava:** doúčtování fronty do Spoolmanu se zacyklilo. `flush_pending_spools()` se po úspěšném

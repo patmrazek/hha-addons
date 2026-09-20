@@ -467,13 +467,17 @@ class Collector:
     def pending_spool_sessions(self, days: int = 120) -> list[dict]:
         """Dokončené tisky, které se ještě nestihly odečíst ze cívky (Spoolman byl nedostupný)."""
         since = int(time.time()) - days * 86400
+        # Cizí tisky (přišly gitem z druhé lokality) neodečítáme – do Spoolmanu zapisuje vždy jen ta
+        # instance, u které tiskárna stála. Jinak by je odečetly obě a filament by zmizel dvakrát.
         return self.db.query("""SELECT s.id, s.subtask_name, s.ended_ts, s.filament_g,
                                        SUM(COALESCE(f.used_g, 0) - COALESCE(f.spool_deducted_g, 0)) AS pending_g
                                 FROM sessions s JOIN session_filaments f ON f.session_id = s.id
                                 WHERE s.printer_serial = ? AND s.ended_ts IS NOT NULL AND s.ended_ts >= ?
                                   AND COALESCE(f.used_g, 0) - COALESCE(f.spool_deducted_g, 0) > 0.5
                                   AND s.manual_override IS NOT 1
-                                GROUP BY s.id ORDER BY s.ended_ts""", (self.serial, since))
+                                  AND (s.origin IS NULL OR s.origin = ?)
+                                GROUP BY s.id ORDER BY s.ended_ts""",
+                             (self.serial, since, self.settings.sync_instance or ""))
 
     def flush_pending_spools(self, _depth: int = 0):
         """Doúčtuje do Spoolmanu spotřebu tisků, které proběhly, když byl nedostupný (jiná lokalita, výpadek VPN)."""
