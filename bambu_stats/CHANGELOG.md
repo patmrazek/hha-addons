@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.1 - 2026-09-23
+
+- **Oprava hledání tiskárny z 0.16.0.** Rozhodnutí „mám ji ve své síti?" se opíralo o adresu
+  zvolenou pro spojení, jenže add-on běží v kontejneru s adresou 172.30.x.x — nikdy nesedla
+  s podsítí tiskárny, takže i tiskárna ve vlastní LAN vyšla jako „za VPN" a instance přestala
+  sbírat uprostřed tisku. Podsítě hostitele se nově berou ze Supervisoru (`/network/info`).
+- Oprava schématu `printer_hosts`: položka seznamu musí být `str`, ne `str?` — Supervisor
+  seznam s `str?` tiše zahodil a dorazil prázdný.
+
+
 ## 0.16.0 - 2026-09-23
 
 - **Tiskárna se hledá sama, sběr se přepíná bez zásahu.** Nová volba `printer_hosts` bere seznam
