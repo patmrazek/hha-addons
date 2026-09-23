@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import aggregates, hms as hmsmod
+from . import aggregates, hms as hmsmod, locator
 from .config import PrinterConfig, Settings
 from .db import Database
 from .filament import FilamentResolver
@@ -25,6 +25,7 @@ from .state_machine import Event, Snapshot, StateMachine
 LOG = logging.getLogger("collector")
 PROGRESS_WRITE_EVERY_S = 10
 STATS_EVERY_S = 300
+LOCATE_EVERY_S = 120        # jak často se ptát, kde tiskárna stojí
 FILAMENT_RETRY_AT_S = (60, 300, 900)
 
 
@@ -42,9 +43,16 @@ class Collector:
             LOG.info("nalezena otevřená session %s (%s, %s %%) – pokusím se navázat", open_row["id"], open_row.get("subtask_name"), open_row.get("last_percent"))
         self.sm = StateMachine(self.serial, open_row, last["fingerprint"] if last else None)
         pinfo = db.get_printer(self.serial) or {}
-        # bez host/access_code (tiskárna je v jiné lokalitě) jede instance jen jako čtečka sdílené historie
-        self.live = bool(printer.host and printer.access_code)
-        self.mqtt = (PrinterMQTT(printer.host, self.serial, printer.access_code, self.on_state, settings.tls_verify,
+        # Tiskárna cestuje mezi lokalitami, tak se hledá na všech známých adresách. Sledovat ji
+        # smí jen instance, která ji má ve své síti – přes VPN na ni dosáhnou obě a sbíraly by
+        # dvakrát. Bez access_code nebo bez jediné adresy jede instance jen jako čtečka historie.
+        self._adresa: str | None = None
+        self._lokalne = False
+        if printer.access_code and printer.vsechny_adresy:
+            self._adresa, self._lokalne = locator.kde_je_tiskarna(printer.vsechny_adresy)
+            LOG.info("%s", locator.popis(self._adresa, self._lokalne))
+        self.live = bool(self._adresa and self._lokalne)
+        self.mqtt = (PrinterMQTT(self._adresa, self.serial, printer.access_code, self.on_state, settings.tls_verify,
                                  pinned_fingerprint=pinfo.get("tls_fingerprint"), on_pin=self._on_pin, on_connection=self._on_conn)
                      if self.live else None)
         self.pub = HAPublisher(settings.mqtt, prefix, self.serial, printer.name, on_command=self.on_command, currency=settings.currency)
@@ -56,12 +64,53 @@ class Collector:
         self._filament_marks: set[int] = set()
         self._last_snapshot: Snapshot | None = None
         self._stats_dirty = True
-        self.db.touch_printer(self.serial, name=printer.name, ip=printer.host)
+        self.db.touch_printer(self.serial, name=printer.name, ip=self._adresa or printer.host)
         self.sync: GitSync | None = None
         if settings.sync_repo and settings.sync_instance:
             self.sync = GitSync(db, settings.sync_repo, settings.sync_token, settings.sync_instance, settings.data_dir)
             LOG.info("sync historie zapnut: %s jako '%s'", settings.sync_repo, settings.sync_instance)
         self._last_sync = 0.0
+
+    def _prehodnot_umisteni(self):
+        """Přijela nebo odjela tiskárna? Instance se podle toho sama zapne nebo stáhne.
+
+        Smysl je plug-and-play: tiskárnu jde zapnout v kterékoliv lokalitě a sběr se rozběhne
+        tam, kde stojí, bez sahání do nastavení. Nikdy se nepřepíná uprostřed tisku — otevřená
+        session patří té instanci, která ji začala, a přehazování by ji roztrhlo na dvě.
+        """
+        if not (self.printer.access_code and self.printer.vsechny_adresy):
+            return
+        with self._lock:
+            if self.sm.session:
+                return
+        adresa, lokalne = locator.kde_je_tiskarna(self.printer.vsechny_adresy)
+        if (adresa, lokalne) == (self._adresa, self._lokalne):
+            return
+        LOG.info("změna umístění: %s", locator.popis(adresa, lokalne))
+        self._adresa, self._lokalne = adresa, lokalne
+        chci_sbirat = bool(adresa and lokalne)
+        if chci_sbirat == self.live:
+            if self.live and self.mqtt and self.mqtt.host != adresa:
+                self.mqtt.stop()                    # tatáž lokalita, jiná IP (nová rezervace)
+                self.mqtt.host = adresa
+                self.mqtt.start()
+            return
+        if chci_sbirat:
+            pinfo = self.db.get_printer(self.serial) or {}
+            self.mqtt = PrinterMQTT(adresa, self.serial, self.printer.access_code, self.on_state,
+                                    self.settings.tls_verify, pinned_fingerprint=pinfo.get("tls_fingerprint"),
+                                    on_pin=self._on_pin, on_connection=self._on_conn)
+            self.mqtt.start()
+            self.live = True
+            self.db.touch_printer(self.serial, ip=adresa)
+            LOG.info("tiskárna dorazila – začínám sbírat")
+        else:
+            if self.mqtt:
+                self.mqtt.stop()
+                self.mqtt = None
+            self.live = False
+            LOG.info("tiskárna odjela – přecházím na sdílení historie")
+        self._stats_dirty = True
 
     # --- start / stop --------------------------------------------------------------
     def start(self):
@@ -608,7 +657,8 @@ class Collector:
     def health(self) -> dict:
         if not self.mqtt:   # jen sync – zdraví určuje poslední úspěšná synchronizace
             ok = bool(self.sync and self.sync.last_ok and time.time() - self.sync.last_ok < 3 * self.settings.sync_interval_min * 60)
-            return {"ok": ok, "version": __import__("bambu_stats").__version__, "printer": self.printer.name, "mode": "sync_only",
+            return {"ok": ok, "version": __import__("bambu_stats").__version__, "printer": self.printer.name,
+                    "mode": "sync_only", "umisteni": locator.popis(self._adresa, self._lokalne),
                     "printer_mqtt_connected": False, "ha_mqtt_connected": self.pub.connected, "db_size_mb": self.db.size_mb(),
                     "sync": ({"instance": self.sync.instance, "last_ok": int(self.sync.last_ok) if self.sync.last_ok else None,
                               "error": self.sync.last_error, "imported_total": self.sync.imported_total} if self.sync else None)}
@@ -617,6 +667,7 @@ class Collector:
         with self._lock:
             sess = self.sm.session
         return {"ok": bool(ok), "version": __import__("bambu_stats").__version__, "printer": self.printer.name,
+                "umisteni": locator.popis(self._adresa, self._lokalne),
                 "printer_mqtt_connected": self.mqtt.connected, "last_report_age_s": round(age) if age is not None else None,
                 "messages": self.mqtt.msg_count, "ha_mqtt_connected": self.pub.connected, "db_size_mb": self.db.size_mb(),
                 "open_session": sess.id if sess else None, "open_session_name": sess.subtask_name if sess else None,
@@ -649,6 +700,9 @@ class Collector:
                         if elapsed >= mark and mark not in self._filament_marks:
                             self._filament_marks.add(mark)
                             self._resolve_filament(sess.id, False)
+                if now - getattr(self, "_last_locate", 0) >= LOCATE_EVERY_S:
+                    self._last_locate = now
+                    self._prehodnot_umisteni()
                 if self.sync and now - self._last_sync >= self.settings.sync_interval_min * 60:
                     self._run_sync()
                 if self._stats_dirty or now - self._last_stats >= STATS_EVERY_S:

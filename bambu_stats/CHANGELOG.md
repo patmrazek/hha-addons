@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.0 - 2026-09-23
+
+- **Tiskárna se hledá sama, sběr se přepíná bez zásahu.** Nová volba `printer_hosts` bere seznam
+  adres, na kterých tiskárna může stát. Add-on je zkouší a podle adresy, kterou si operační systém
+  vybere pro spojení, pozná, jestli tiskárna stojí v jeho síti, nebo je vidět jen přes VPN. Sbírá
+  vždy jen ta instance, u které tiskárna fyzicky je — přes VPN na ni dosáhnou obě a sbíraly by
+  dvakrát. Kontroluje se po dvou minutách, takže po převozu se sběr rozběhne sám; nikdy se
+  nepřepíná uprostřed tisku, aby se otevřená session neroztrhla.
+- Do stavu collectoru přibyl údaj `umisteni` – kde tiskárna je a která lokalita ji sleduje.
+- Odpadá tím ruční přepínání `printer_host` a `spoolman_url` po každém převozu.
+
+
 ## 0.15.1 - 2026-09-22
 
 - **Oprava dělení spotřeby při výměně cívky.** Rozdělení podle slotů (0.15.0) bralo jako přepnutí

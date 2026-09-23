@@ -21,6 +21,14 @@ class PrinterConfig:
     access_code: str
     ha_weight_entity: str = ""
     ha_length_entity: str = ""
+    hosts: list[str] = field(default_factory=list)
+
+    @property
+    def vsechny_adresy(self) -> list[str]:
+        """Adresy k vyzkoušení: nejdřív ta z `printer_host`, pak ostatní známé, bez duplicit."""
+        out = [self.host] if self.host else []
+        out += [h for h in self.hosts if h and h not in out]
+        return out
 
     @property
     def slug(self) -> str:
@@ -80,7 +88,10 @@ def load() -> Settings:
         s.printers.append(PrinterConfig(
             name=opts.get("printer_name") or "Bambu", host=opts.get("printer_host") or "", serial=opts["printer_serial"],
             access_code=opts.get("access_code") or "", ha_weight_entity=opts.get("ha_weight_entity") or "",
-            ha_length_entity=opts.get("ha_length_entity") or ""))
+            ha_length_entity=opts.get("ha_length_entity") or "",
+            # Adresy, na kterých tiskárna může stát (cestuje mezi lokalitami). Sleduje ji vždy
+            # jen ta instance, která ji vidí ve své LAN – viz locator.py.
+            hosts=[h.strip() for h in (opts.get("printer_hosts") or []) if h and h.strip()]))
     for p in opts.get("printers") or []:
         if p.get("serial"):
             s.printers.append(PrinterConfig(
