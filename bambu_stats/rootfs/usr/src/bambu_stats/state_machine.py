@@ -200,6 +200,11 @@ class Session:
     nozzle_diameter: str = ""
     spd_lvl: int = 0
     tray_now_start: int | None = None
+    # Úseky tisku po slotech: [{"tray": 1, "from_pct": 0}, {"tray": 3, "from_pct": 64}, …].
+    # AMS umí při došlém filamentu sám přepnout na jinou cívku stejné barvy (auto-refill) a
+    # tiskne dál. Bez tohohle záznamu by se celá spotřeba připsala slotu, ve kterém tisk začal,
+    # a cívka, ze které se dotisklo, by v evidenci zůstala nedotčená.
+    tray_spans: list = field(default_factory=list)
     trays_start: list = field(default_factory=list)
     trays_end: list = field(default_factory=list)
     threemf_status: str | None = None
@@ -220,7 +225,7 @@ class Session:
         import json
         allowed = {f for f in cls.__dataclass_fields__ if not f.startswith("_")}
         data = {k: v for k, v in row.items() if k in allowed and v is not None}
-        for k in ("trays_start", "trays_end"):
+        for k in ("trays_start", "trays_end", "tray_spans"):
             if isinstance(data.get(k), str):
                 try:
                     data[k] = json.loads(data[k])
@@ -403,9 +408,22 @@ class StateMachine:
         sess.updated_ts = int(s.ts)
         if s.spd_lvl:
             sess.spd_lvl = s.spd_lvl
-        if s.gcode_state in GS_RUNNING and s.tray_now != 255 and (sess.tray_now_start in (None, 255)):
-            sess.tray_now_start = s.tray_now
-            sess.trays_start = [t.as_dict() for t in s.trays] or sess.trays_start
+        if s.gcode_state in GS_RUNNING and s.tray_now != 255:
+            if sess.tray_now_start in (None, 255):
+                sess.tray_now_start = s.tray_now
+                sess.trays_start = [t.as_dict() for t in s.trays] or sess.trays_start
+            if not sess.tray_spans:
+                sess.tray_spans = [{"tray": s.tray_now, "from_pct": max(s.percent, 0)}]
+            elif sess.tray_spans[-1]["tray"] != s.tray_now and sess.status == "running":
+                # Nový úsek začíná tam, kde tisk právě je. Procento je jediné měřítko postupu,
+                # které tiskárna dává průběžně – čas by u proměnlivé vrstvy klamal víc.
+                #
+                # Jen za běhu: při pauze na výměnu cívky tiskárna chvíli hlásí cizí slot
+                # (22. 9. 2026 takhle přiskočily 4 g šedého PETG k tisku z černého PLA).
+                # Ruční výměna filamentu ve stejném slotu se tím pádem nezaznamená vůbec —
+                # tu pozná jen obsluha a opraví se ručně; auto-refill, kvůli kterému to
+                # celé vzniklo, mění slot za běhu a ten se zachytí správně.
+                sess.tray_spans.append({"tray": s.tray_now, "from_pct": max(s.percent, 0)})
         if not sess.subtask_name and s.subtask_name:
             self._copy_ids(s)
         if sess.predicted_s is None and s.remaining_min > 0 and sess.status == "running":

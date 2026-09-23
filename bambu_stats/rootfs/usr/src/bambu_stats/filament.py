@@ -79,6 +79,76 @@ class FilamentResolver:
         l = self.ha.numeric(self.printer.ha_length_entity) if self.printer.ha_length_entity else None
         return w, l
 
+    def _rozdel_podle_slotu(self, rows: list[dict], session: dict, trays_start: list[dict]) -> list[dict]:
+        """Spotřebu rozdělí mezi sloty, pokud AMS během tisku přepnul cívku (auto-refill).
+
+        Když ve slotu dojde filament, AMS sáhne po jiné cívce stejné barvy a tiskne dál. Slicer
+        o tom nic neví a `tray_now_start` drží slot ze začátku, takže bez tohohle by celá spotřeba
+        padla na cívku, která už dávno nic nedávala — a ta druhá by zůstala v evidenci plná
+        (21. 9. 2026 takhle ušlo 142 g).
+
+        Dělí se poměrem podle procenta postupu, protože jiné průběžné měřítko tiskárna nedává.
+        Je to odhad: spotřeba na procento není rovnoměrná, takže řádky nesou `is_estimate=1`
+        a `mapping_source='refill_split'`. Pořád je to řádově blíž pravdě než všechno na jednu cívku.
+        """
+        spans = session.get("tray_spans")
+        if isinstance(spans, str):
+            try:
+                spans = json.loads(spans)
+            except ValueError:
+                spans = None
+        if not spans or len(spans) < 2 or not rows:
+            return rows
+
+        konec = (session.get("last_percent") or 100) / 100.0
+        hranice = [(sp["tray"], (sp.get("from_pct") or 0) / 100.0) for sp in spans]
+
+        # Slot, který tiskárna na začátku hlásila prázdný, do dělení nepatří — do prázdna se
+        # netiskne. Úsek kratší než 2 % postupu taky ne: to není přepnutí cívky, ale zákmit
+        # při manévru tiskárny (výměna, čištění trysky), který by cizí cívce připsal gramy,
+        # co z ní nikdy neodešly.
+        MIN_USEK = 0.02
+        osazene = {t["tray_global"] for t in trays_start if (t.get("tray_type") or t.get("color"))}
+        useky: list[tuple[int, float]] = []
+        for i, (tray, od) in enumerate(hranice):
+            do = hranice[i + 1][1] if i + 1 < len(hranice) else konec
+            delka = do - od
+            if delka <= MIN_USEK or (osazene and tray not in osazene):
+                continue
+            # Když zákmit vypadne, sousední úseky téhož slotu se musí zase spojit v jeden,
+            # jinak by z jedné cívky vznikly dva řádky a odečet by se rozdrobil.
+            if useky and useky[-1][0] == tray:
+                useky[-1] = (tray, useky[-1][1] + delka)
+            else:
+                useky.append((tray, delka))
+
+        celkem = sum(d for _, d in useky)
+        if len(useky) < 2 or celkem <= 0:
+            return rows
+        podily = useky
+
+        by_global = {t["tray_global"]: t for t in trays_start}
+        nove: list[dict] = []
+        for r in rows:
+            for tray, podil in podily:
+                cast = podil / celkem
+                novy = dict(r)
+                novy["tray_global"] = tray
+                t = by_global.get(tray)
+                if t:
+                    novy["ams_id"], novy["tray_id"] = t["ams_id"], t["tray_id"]
+                    novy["tray_info_idx"] = t.get("info_idx")
+                for k in ("used_g", "used_m"):
+                    if novy.get(k) is not None:
+                        novy[k] = round(novy[k] * cast, 2)
+                novy["is_estimate"] = 1
+                novy["mapping_source"] = "refill_split"
+                novy["spool_deducted_g"] = 0      # dělený řádek je nový, odečet začíná od nuly
+                nove.append(novy)
+        LOG.info("session %s: AMS přepnul cívku, spotřeba rozdělena mezi sloty %s",
+                 session["id"][-8:], ", ".join(f"{t + 1} ({p / celkem:.0%})" for t, p in podily))
+        return nove
+
     def _from_remain(self, session: dict) -> list[dict]:
         start = {t["tray_global"]: t for t in _trays(session, "trays_start")}
         rows = []
@@ -195,6 +265,8 @@ class FilamentResolver:
                                       source="cloud_ha" if finished_ok else "estimate", is_estimate=0 if finished_ok else 1,
                                       mapping="tray_now" if tray else "unmapped"))
                 source, is_est = ("cloud_ha", 0) if finished_ok else ("estimate", 1)
+
+        rows = self._rozdel_podle_slotu(rows, session, trays_start)
 
         if final:
             remain_rows = self._from_remain(session)

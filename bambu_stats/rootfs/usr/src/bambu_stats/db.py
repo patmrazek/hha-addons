@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 LOG = logging.getLogger("db")
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   filament_g REAL, filament_m REAL, filament_source TEXT, filament_is_estimate INTEGER DEFAULT 0,
   cloud_weight_g REAL, cloud_length_m REAL, plan_weight_g REAL, plan_length_m REAL, plan_prediction_s INTEGER,
   nozzle_type TEXT, nozzle_diameter TEXT, spd_lvl INTEGER, tray_now_start INTEGER,
-  trays_start TEXT, trays_end TEXT,
+  trays_start TEXT, trays_end TEXT, tray_spans TEXT,
   threemf_path TEXT, threemf_status TEXT, threemf_fetched_ts INTEGER,
   incomplete INTEGER DEFAULT 0, manual_override INTEGER DEFAULT 0, notes TEXT,
   origin TEXT, synced_ts INTEGER, cover TEXT, quality TEXT, quality_note TEXT,
@@ -104,6 +104,8 @@ class Database:
         for col in ("quality", "quality_note"):      # 'ok' | 'defect' – vytištěno, ale zmetek
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
+        if "tray_spans" not in cols:      # úseky tisku po slotech kvůli auto-refillu AMS
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN tray_spans TEXT")
         fcols = {r[1] for r in self.conn.execute("PRAGMA table_info(session_filaments)")}
         for col, typ in (("spool_id", "INTEGER"), ("spool_price_per_kg", "REAL"), ("spool_deducted_g", "REAL DEFAULT 0")):
             if col not in fcols:

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.15.1 - 2026-09-22
+
+- **Oprava dělení spotřeby při výměně cívky.** Rozdělení podle slotů (0.15.0) bralo jako přepnutí
+  i okamžik, kdy tiskárna během pauzy na výměnu filamentu ohlásila cizí slot — 22. 9. 2026 takhle
+  přiskočily 4 g šedého PETG k tisku, který celý běžel z černého PLA. Nově se úsek založí jen
+  za běhu tisku, ignoruje se slot hlášený jako prázdný a úsek kratší než 2 % postupu; po odpadnutí
+  takového zákmitu se sousední úseky téhož slotu zase spojí v jeden.
+- Ruční výměna cívky ve stejném slotu se tím pádem nezaznamená vůbec — tu pozná jen obsluha
+  a opraví se ručně. Auto-refill, kvůli kterému dělení vzniklo, mění slot za běhu a zachytí se.
+
+
+## 0.15.0 - 2026-09-21
+
+- **Auto-refill AMS se konečně zaznamená.** Když ve slotu dojde filament, AMS sáhne po jiné cívce
+  stejné barvy a tiskne dál. Dosud se celá spotřeba připsala slotu, ve kterém tisk začal, a cívka,
+  ze které se dotisklo, zůstala v evidenci nedotčená (21. 9. 2026 takhle ušlo 142 g a dojetá cívka
+  vypadala, že má ještě 237 g). Nově session vede úseky tisku po slotech (`tray_spans`) a spotřeba
+  se mezi cívky rozdělí poměrem podle procenta postupu. Dělené řádky nesou `is_estimate=1`
+  a `mapping_source='refill_split'` — poměr podle procent je odhad, spotřeba na procento není
+  rovnoměrná, ale je to řádově blíž pravdě než všechno na jednu cívku.
+- Schéma databáze 7 (přibyl sloupec `sessions.tray_spans`, migrace je aditivní).
+
+
 ## 0.14.2 - 2026-09-20
 
 - **Oprava:** doúčtování do Spoolmanu se nově týká jen vlastních tisků. Tisky naimportované gitem
