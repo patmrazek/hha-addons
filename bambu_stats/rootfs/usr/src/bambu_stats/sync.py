@@ -21,6 +21,11 @@ LOG = logging.getLogger("sync")
 SESSION_EXPORT_COLS_SKIP = {"created_ts", "updated_ts"}
 
 
+def _bez_casu(text: str) -> str:
+    """Obsah bez řádku s časem exportu — aby se necommitovalo, když se nic věcného nezměnilo."""
+    return "\n".join(r for r in (text or "").splitlines() if '"exported_ts"' not in r)
+
+
 class GitSync:
     def __init__(self, db, repo_url: str, token: str, instance: str, data_dir: Path, branch: str = "main"):
         self.db, self.instance, self.branch = db, instance, branch
@@ -110,14 +115,58 @@ class GitSync:
                 n += 1
         return n
 
+    # --- provozní stav (údržba, silikagel, deník slotů, chyby) ------------------
+    # Tisky nejsou všechno, co má být na obou místech stejné. Bez tohohle by po převozu
+    # tiskárny počítadlo údržby začalo od nuly, silikagel by neměl od čeho počítat interval
+    # a odečty ze cívek by sahaly na cívku, o které druhá lokalita neví.
+    def _export_stav(self) -> int:
+        serialy = {r["printer_serial"] for r in self.db.query("SELECT DISTINCT printer_serial FROM sessions")
+                   if r.get("printer_serial")}
+        serialy |= {r["serial"] for r in self.db.query("SELECT serial FROM printers") if r.get("serial")}
+        zapsano = 0
+        for serial in sorted(serialy):
+            rec = {"v": 1, "instance": self.instance, "exported_ts": int(time.time()),
+                   "meta": self.db.meta_pro_tiskarnu(serial),
+                   "slot_spools": [{k: v for k, v in r.items() if k != "id"}
+                                   for r in self.db.slot_spools_od(serial)],
+                   "hms": [{k: v for k, v in r.items() if k != "id"} for r in self.db.hms_od(serial)]}
+            if not (rec["meta"] or rec["slot_spools"] or rec["hms"]):
+                continue
+            path = self.dir / "stav" / serial / f"{self.instance}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            novy = json.dumps(rec, ensure_ascii=False, sort_keys=True, indent=1)
+            stary = path.read_text() if path.exists() else ""
+            # `exported_ts` se mění pokaždé — porovnává se zbytek, ať se necommituje prázdná změna
+            if _bez_casu(stary) != _bez_casu(novy):
+                path.write_text(novy + "\n")
+                zapsano += 1
+        return zapsano
+
+    def _import_stav(self) -> int:
+        zmeny = 0
+        for path in sorted((self.dir / "stav").glob("*/*.json")) if (self.dir / "stav").exists() else []:
+            if path.stem == self.instance:
+                continue          # vlastní soubor zpátky nečteme
+            try:
+                rec = json.loads(path.read_text())
+            except ValueError:
+                continue
+            serial = path.parent.name
+            zmeny += self.db.sluc_meta(serial, rec.get("meta") or {})
+            zmeny += self.db.sluc_slot_spools(rec.get("slot_spools") or [])
+            zmeny += self.db.sluc_hms(rec.get("hms") or [])
+        return zmeny
+
     # --- cyklus -----------------------------------------------------------------
     def run_once(self) -> dict:
         try:
             self.ensure_repo()
             exported = self._export_rows()
+            stav = self._export_stav()
             self._git("add", "-A")
             if self._git("status", "--porcelain").stdout.strip():
-                self._git("commit", "--quiet", "-m", f"{self.instance}: +{exported} session")
+                popis = f"+{exported} session" + (f", stav {stav}x" if stav else "")
+                self._git("commit", "--quiet", "-m", f"{self.instance}: {popis}")
             # pull + push s jedním opakováním
             for attempt in range(2):
                 r = self._git("pull", "--quiet", "--rebase", "origin", self.branch, check=False)
@@ -129,11 +178,13 @@ class GitSync:
                 if attempt == 1:
                     raise RuntimeError(("push selhal: " + (p.stderr or "")).replace(self._auth_url, "<repo>")[:200])
             imported = self._import_rows()
+            stav_in = self._import_stav()
             self.imported_total += imported
             self.last_ok, self.last_error = time.time(), None
-            if exported or imported:
-                LOG.info("sync: export %d, import %d session", exported, imported)
-            return {"ok": True, "exported": exported, "imported": imported}
+            if exported or imported or stav_in:
+                LOG.info("sync: export %d, import %d session, převzato %d změn provozního stavu",
+                         exported, imported, stav_in)
+            return {"ok": True, "exported": exported, "imported": imported, "stav": stav_in}
         except Exception as e:
             self.last_error = str(e)[:200]
             LOG.warning("sync selhal: %s", self.last_error)

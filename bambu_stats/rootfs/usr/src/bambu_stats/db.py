@@ -106,6 +106,13 @@ class Database:
                 self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
         if "tray_spans" not in cols:      # úseky tisku po slotech kvůli auto-refillu AMS
             self.conn.execute("ALTER TABLE sessions ADD COLUMN tray_spans TEXT")
+        # Deník slotů se nově sdílí mezi lokalitami, takže potřebuje přirozený klíč — jinak by
+        # import stejnou výměnu přidával znovu při každé synchronizaci. Starší databáze můžou
+        # mít duplicity z doby bez klíče, ty se nejdřív sloučí (ponechá se nejnovější zápis).
+        self.conn.execute("""DELETE FROM slot_spools WHERE id NOT IN (
+                               SELECT MAX(id) FROM slot_spools GROUP BY printer_serial, tray_global, from_ts)""")
+        self.conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS slot_spools_klic
+                             ON slot_spools(printer_serial, tray_global, from_ts)""")
         fcols = {r[1] for r in self.conn.execute("PRAGMA table_info(session_filaments)")}
         for col, typ in (("spool_id", "INTEGER"), ("spool_price_per_kg", "REAL"), ("spool_deducted_g", "REAL DEFAULT 0")):
             if col not in fcols:
@@ -328,6 +335,97 @@ class Database:
     def mark_slot_pushed(self, rec_id):
         with self.lock:
             self.conn.execute("UPDATE slot_spools SET pushed_ts=? WHERE id=?", (int(time.time()), rec_id))
+
+    # --- data sdílená mezi lokalitami -------------------------------------------
+    # Tiskárna cestuje, takže obě instance mají mít stejnou historii. Kromě tisků sem patří
+    # i údržba, silikagel a deník osazení slotů — jinak by po převozu počítadlo údržby začalo
+    # od nuly a odečty ze cívek by sahaly na špatnou cívku. Telemetrie (`samples`) se záměrně
+    # nesdílí: jsou to desítky MB a mimo svou lokalitu nemají smysl.
+    META_SDILENE = ("maintenance_done_ts", "maintenance_done_history",
+                    "desiccant_changed_ts", "desiccant_changed_history")
+
+    def meta_pro_tiskarnu(self, serial: str) -> dict:
+        """Meta klíče vázané na tiskárnu, ve tvaru {krátký_název: hodnota}."""
+        out = {}
+        for zaklad in self.META_SDILENE:
+            v = self.get_meta(f"{zaklad}_{serial}")
+            if v is not None:
+                out[zaklad] = v
+        return out
+
+    def sluc_meta(self, serial: str, cizi: dict) -> int:
+        """Přijme meta z druhé lokality. Časy: vyhrává novější. Historie: sjednotí se.
+
+        U jednoho času (poslední údržba) dává smysl novější zápis — údržba se dělá jednou
+        a poslední platí. U historie ne: každá lokalita mohla zaznamenat jinou událost a
+        obě se staly, takže se seznamy spojí.
+        """
+        zmeny = 0
+        for zaklad, hodnota in (cizi or {}).items():
+            if zaklad not in self.META_SDILENE:
+                continue
+            klic = f"{zaklad}_{serial}"
+            moje = self.get_meta(klic)
+            if zaklad.endswith("_history"):
+                try:
+                    a = json.loads(moje or "[]")
+                    b = json.loads(hodnota or "[]")
+                except ValueError:
+                    continue
+                spojeno = sorted({int(x) for x in list(a) + list(b)})[-50:]
+                if spojeno != a:
+                    self.set_meta(klic, json.dumps(spojeno))
+                    zmeny += 1
+            else:
+                try:
+                    if int(hodnota) > int(moje or 0):
+                        self.set_meta(klic, int(hodnota))
+                        zmeny += 1
+                except (TypeError, ValueError):
+                    continue
+        return zmeny
+
+    def slot_spools_od(self, serial: str, od_ts: int = 0) -> list[dict]:
+        return self.query("SELECT * FROM slot_spools WHERE printer_serial=? AND COALESCE(created_ts, from_ts) >= ?"
+                          " ORDER BY from_ts", (serial, int(od_ts)))
+
+    def sluc_slot_spools(self, rows: list[dict]) -> int:
+        """Přijme cizí záznamy deníku slotů. Klíč je (tiskárna, slot, od kdy) — stejná výměna
+        zapsaná na obou místech se tím pádem neztrojí."""
+        zmeny = 0
+        with self.lock:
+            for r in rows or []:
+                d = {k: v for k, v in r.items() if k != "id"}
+                if not d.get("printer_serial") or d.get("tray_global") is None or not d.get("from_ts"):
+                    continue
+                cols = list(d)
+                try:
+                    cur = self.conn.execute(
+                        f"INSERT OR IGNORE INTO slot_spools({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                        [d[c] for c in cols])
+                    zmeny += cur.rowcount or 0
+                except sqlite3.Error:
+                    continue
+        return zmeny
+
+    def hms_od(self, serial: str, od_ts: int = 0) -> list[dict]:
+        return self.query("SELECT * FROM hms_events WHERE printer_serial=? AND first_ts >= ? ORDER BY first_ts",
+                          (serial, int(od_ts)))
+
+    def sluc_hms(self, rows: list[dict]) -> int:
+        zmeny = 0
+        with self.lock:
+            for r in rows or []:
+                d = {k: v for k, v in r.items() if k != "id"}
+                cols = list(d)
+                try:
+                    cur = self.conn.execute(
+                        f"INSERT OR IGNORE INTO hms_events({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                        [d[c] for c in cols])
+                    zmeny += cur.rowcount or 0
+                except sqlite3.Error:
+                    continue
+        return zmeny
 
     def query(self, sql, params=()):
         with self.lock:

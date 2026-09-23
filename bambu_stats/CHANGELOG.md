@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.0 - 2026-09-24
+
+- **Mezi lokalitami se sdílí i provozní stav, nejen tisky.** Dosud se synchronizovaly jen
+  session; údržba, výměny silikagelu a deník osazení slotů zůstávaly v té databázi, kde vznikly.
+  Po převozu tiskárny tak počítadlo údržby začínalo od nuly, silikagel neměl od čeho počítat
+  interval (24. 9. 2026 hlásil `unknown`, i když se měnil 18. 9.) a odečty ze cívek sahaly
+  na cívku, o které druhá lokalita nevěděla.
+- Slučování: u časů (poslední údržba) vyhrává novější zápis, historie výměn se spojí, deník
+  slotů má nově přirozený klíč (tiskárna, slot, od kdy), takže se tatáž výměna neuloží dvakrát.
+  Sdílí se i HMS události.
+- **Nesdílí se záměrně:** telemetrie `samples` (desítky MB, mimo svou lokalitu bezcenná) a IP
+  s TLS otiskem tiskárny (v druhé síti platí jiné).
+- Migrace: staré databáze můžou mít v deníku slotů duplicity z doby bez klíče — ty se při
+  prvním startu sloučí, ponechá se nejnovější zápis.
+
+
 ## 0.16.1 - 2026-09-23
 
 - **Oprava hledání tiskárny z 0.16.0.** Rozhodnutí „mám ji ve své síti?" se opíralo o adresu
