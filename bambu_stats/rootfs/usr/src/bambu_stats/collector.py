@@ -190,8 +190,16 @@ class Collector:
                 self.publish_stats(force=True)
             else:
                 LOG.warning("mark_defect: session nenalezena (%s)", sid_suffix)
-        elif cmd in ("maintenance_done", "desiccant_changed"):
+        elif cmd.split("@")[0] in ("maintenance_done", "desiccant_changed"):
+            # maintenance_done[@<ISO čas>] – čas se hodí, když se na zápis zapomene a doplňuje
+            # se zpětně. Bez něj by interval běžel od doplnění, ne od skutečné výměny.
+            cmd, _, kdy = cmd.partition("@")
             now_ts = int(time.time())
+            if kdy.strip():
+                try:
+                    now_ts = int(dt.datetime.fromisoformat(kdy.strip()).replace(tzinfo=self.tz).timestamp())
+                except ValueError:
+                    LOG.warning("%s: nečitelný čas %r, beru teď", cmd, kdy)
             self.db.set_meta(f"{cmd}_ts_{self.serial}", now_ts)
             key = f"{cmd}_history_{self.serial}"          # seznam všech výměn/údržeb kvůli grafu a doložení
             try:
@@ -200,7 +208,7 @@ class Collector:
                 hist = []
             hist = sorted(set(hist + [now_ts]))[-50:]
             self.db.set_meta(key, json.dumps(hist))
-            LOG.info("%s zaznamenáno", cmd)
+            LOG.info("%s zaznamenáno k %s", cmd, dt.datetime.fromtimestamp(now_ts, self.tz).strftime("%d.%m.%Y %H:%M"))
             self._stats_dirty = True
             self.publish_stats(force=True)
         elif cmd.startswith("set_plan:"):

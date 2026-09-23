@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.1 - 2026-09-24
+
+- Údržbu i výměnu silikagelu jde zapsat zpětně: `maintenance_done@2026-09-18T20:00`,
+  `desiccant_changed@2026-09-18T20:00`. Bez toho by interval běžel od chvíle, kdy se na zápis
+  přišlo, ne od skutečné výměny — a právě proto 24. 9. 2026 chybělo datum silikagelu měněného
+  18. 9. Bez času se chová jako dřív a zapíše přítomnost.
+
+
 ## 0.17.0 - 2026-09-24
 
 - **Mezi lokalitami se sdílí i provozní stav, nejen tisky.** Dosud se synchronizovaly jen
