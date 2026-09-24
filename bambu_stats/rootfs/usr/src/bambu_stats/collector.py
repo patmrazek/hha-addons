@@ -51,6 +51,7 @@ class Collector:
         if printer.access_code and printer.vsechny_adresy:
             self._adresa, self._lokalne = locator.kde_je_tiskarna(printer.vsechny_adresy)
             LOG.info("%s", locator.popis(self._adresa, self._lokalne))
+        self.filament.host = self._adresa if self._lokalne else None
         self.live = bool(self._adresa and self._lokalne)
         self.mqtt = (PrinterMQTT(self._adresa, self.serial, printer.access_code, self.on_state, settings.tls_verify,
                                  pinned_fingerprint=pinfo.get("tls_fingerprint"), on_pin=self._on_pin, on_connection=self._on_conn)
@@ -88,6 +89,7 @@ class Collector:
             return
         LOG.info("změna umístění: %s", locator.popis(adresa, lokalne))
         self._adresa, self._lokalne = adresa, lokalne
+        self.filament.host = adresa if lokalne else None
         chci_sbirat = bool(adresa and lokalne)
         if chci_sbirat == self.live:
             if self.live and self.mqtt and self.mqtt.host != adresa:

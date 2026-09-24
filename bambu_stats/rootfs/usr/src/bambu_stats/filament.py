@@ -38,6 +38,9 @@ def _trays(session: dict, key: str) -> list[dict]:
 class FilamentResolver:
     def __init__(self, db, printer, ha, cache_dir: Path, spoolman=None, serial: str | None = None):
         self.db, self.printer, self.ha, self.spoolman = db, printer, ha, spoolman
+        # Adresu, na které tiskárna opravdu je, zjistí collector (locator.py) a nastaví sem.
+        # `printer.host` bývá od 0.16 prázdný – tiskárna se hledá podle `printer_hosts`.
+        self.host: str | None = None
         self.serial = serial or getattr(printer, "serial", "")
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -59,13 +62,16 @@ class FilamentResolver:
         if self._attempts.get(session["id"], 0) >= 6 or not session.get("subtask_name"):
             return None
         self._attempts[session["id"]] = self._attempts.get(session["id"], 0) + 1
-        status, plate, path = threemf.fetch_plate(self.printer.host, self.printer.access_code,
+        host = self.host or self.printer.host
+        if not host:
+            return None          # tiskárna teď není v dosahu této instance – 3MF zkusit příště
+        status, plate, path = threemf.fetch_plate(host, self.printer.access_code,
                                                   session["subtask_name"], session.get("gcode_file") or "")
         self.db.update_session(session["id"], threemf_status=status, threemf_path=path, threemf_fetched_ts=int(time.time()))
         if status == "ok" and plate:
             # uložit surové XML pro pozdější přepočty (USB může být odpojen)
             try:
-                ftp = threemf.PrinterFTP(self.printer.host, self.printer.access_code)
+                ftp = threemf.PrinterFTP(host, self.printer.access_code)
                 xml = ftp.read_slice_info(path)
                 if xml:
                     cache.write_bytes(xml)

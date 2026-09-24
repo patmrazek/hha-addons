@@ -175,6 +175,8 @@ def fetch_plate(host: str, access_code: str, subtask_name: str, gcode_file: str)
         want = plate_index_from_gcode(gcode_file)
         plate = next((p for p in plates if p.index == want), plates[0] if plates else None)
         return ("ok" if plate else "error"), plate, path
-    except (OSError, ssl.SSLError, ftplib.all_errors, socket.timeout) as e:
+    # ftplib.all_errors je sama n-tice – vnořená do další ji Python 3.12 odmítne až ve chvíli,
+    # kdy výjimka opravdu nastane (TypeError místo tichého přeskočení). Proto rozbalit.
+    except (OSError, ssl.SSLError, socket.timeout, *ftplib.all_errors) as e:
         LOG.info("FTPS %s: %s", host, e)
         return "error", None, None

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.3 - 2026-09-24
+
+- **Oprava: od 0.16 se nestahoval 3MF z tiskárny.** Stahování si adresu bralo z `printer_host`,
+  který je od zavedení hledání tiskárny (`printer_hosts`) prázdný → `Name does not resolve`.
+  Bez 3MF add-on nezná rozdělení spotřeby mezi barvy, takže dvoubarevný tisk 24. 9. skončil
+  jako jediný řádek bez slotu a neodečetl se nikam. Adresu teď dodává collector podle toho,
+  kde tiskárnu našel.
+- **Oprava ošetření chyby FTP (od počátku).** `ftplib.all_errors` je sama n-tice a vnořená do
+  `except (…)` ji Python 3.12 odmítne — ale až ve chvíli, kdy výjimka opravdu nastane. Místo tichého
+  přeskočení nestaženého 3MF to shodilo celý výpočet spotřeby.
+
+
 ## 0.17.2 - 2026-09-24
 
 - **Oprava dělení spotřeby u vícebarevných tisků.** Dělení podle slotů (0.15) počítalo s tiskem
