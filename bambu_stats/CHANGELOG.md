@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.2 - 2026-09-24
+
+- **Oprava dělení spotřeby u vícebarevných tisků.** Dělení podle slotů (0.15) počítalo s tiskem
+  z jednoho filamentu: každou změnu slotu bralo jako auto-refill a rozpočítalo všechny filamenty
+  mezi všechny sloty. U dvoubarevného tisku by tak bílá cívka dostala podíl černé a černé cívky
+  podíl bílé. Nově se každý řádek dělí jen mezi sloty, kde byl na začátku stejný materiál a barva
+  — černá mezi dvě černé cívky, bílá zůstane na bílé. Slot bez známého obsahu se nepoužije vůbec.
+- Když tisk celý běžel z jiného slotu se stejným filamentem, než kam ho přiřadil slicer (dvě stejné
+  cívky v AMS), řádek se přesune na skutečný slot, místo aby se odečetl z cívky, která netiskla.
+
+
 ## 0.17.1 - 2026-09-24
 
 - Údržbu i výměnu silikagelu jde zapsat zpětně: `maintenance_done@2026-09-18T20:00`,

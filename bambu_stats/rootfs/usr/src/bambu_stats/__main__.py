@@ -23,9 +23,11 @@ def main() -> int:
     for p in settings.printers:
         log.REDACT.add(p.access_code)
     log.REDACT.add(settings.supervisor_token, settings.mqtt.password, settings.sync_token)
-    live = sum(1 for p in settings.printers if p.host and p.access_code)
-    LOG.info("bambu_stats %s startuje, %d tiskáren (%d sledovaných, %d jen sync), data %s",
-             __version__, len(settings.printers), live, len(settings.printers) - live, settings.data_dir)
+    # Kolik tiskáren se bude opravdu sledovat, se pozná až po jejich nalezení (locator.py),
+    # takže se tu hlásí jen počet nakonfigurovaných — dřív to tvrdilo „0 sledovaných“ i ve chvíli,
+    # kdy se o pár vteřin později tiskárna našla a sbírala, a v logu to mátlo.
+    LOG.info("bambu_stats %s startuje, %d tiskáren nakonfigurováno, data %s",
+             __version__, len(settings.printers), settings.data_dir)
     if not settings.printers:
         LOG.error("Není vyplněné sériové číslo tiskárny (options → printer_serial). Čekám, nic nedělám.")
         while True:
