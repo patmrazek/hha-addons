@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.5 - 2026-09-25
+
+- Oprava 0.17.4: fantomová přípravná session se poznávala podle chybějícího času startu, jenže
+  `fix_start_from_cloud` ho doplní i jí, takže oprava nezabrala a session dostaly celý plán.
+  Nově se chytá samotná příčina: číslo vrstvy vyšší než počet vrstev tisku je z předchozího tisku
+  a pro odhad postupu se nepoužije. Platné číslo vrstvy u zrušeného tisku se použije jako dřív.
+
+
 ## 0.17.4 - 2026-09-25
 
 - **Oprava fantomové spotřeby na začátku tisku.** Přípravná session, kterou za pár vteřin nahradí
