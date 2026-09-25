@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.4 - 2026-09-25
+
+- **Oprava fantomové spotřeby na začátku tisku.** Přípravná session, kterou za pár vteřin nahradí
+  skutečná, zdědila číslo vrstvy z předchozího, už dotištěného tisku. Postup se pak počítal jako
+  „stará vrstva / nové vrstvy" – 25. 9. 2026 vyšlo 935 / 28 = 3 367 % a 1 269 g spotřeby tisku,
+  který se ani nerozběhl; tři takové session srazily plnou cívku ve Spoolmanu na nulu.
+  Nově: session, která nedošla do tisku, nespotřebovala nic, a postup nikdy nepřesáhne 100 %.
+- Nový příkaz `resolve:<id>` – přepočítá spotřebu uzavřeného tisku; rozdíl proti už odečtenému
+  se ve Spoolmanu dorovná, i vrácením.
+
+
 ## 0.17.3 - 2026-09-24
 
 - **Oprava: od 0.16 se nestahoval 3MF z tiskárny.** Stahování si adresu bralo z `printer_host`,

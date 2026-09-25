@@ -213,6 +213,22 @@ class Collector:
             LOG.info("%s zaznamenáno k %s", cmd, dt.datetime.fromtimestamp(now_ts, self.tz).strftime("%d.%m.%Y %H:%M"))
             self._stats_dirty = True
             self.publish_stats(force=True)
+        elif cmd.startswith("resolve:"):
+            # resolve:<konec_id_session> – přepočítat spotřebu uzavřeného tisku (např. po opravě výpočtu).
+            # Rozdíl proti už odečtenému se ve Spoolmanu dorovná, klidně i vrácením.
+            try:
+                sid_suffix = cmd.split(":", 1)[1].strip()
+                row = next((r for r in self.db.query("SELECT * FROM sessions WHERE id LIKE ?", (f"%{sid_suffix}",))), None)
+                if row and row.get("ended_ts"):
+                    with self._resolve_lock:
+                        out = self.filament.resolve(row, final=True)
+                    self._stats_dirty = True
+                    self.publish_stats(force=True)
+                    LOG.info("session %s přepočtena: %s", row["id"][-8:], out)
+                else:
+                    LOG.warning("resolve: uzavřená session %s nenalezena", sid_suffix)
+            except Exception:
+                LOG.exception("resolve selhal")
         elif cmd.startswith("set_plan:"):
             # set_plan:<konec_id_session>:<gramy>[:<metry>] - rucne opravit planovanou hmotnost (napr. po prepsani cloud hodnotou)
             try:

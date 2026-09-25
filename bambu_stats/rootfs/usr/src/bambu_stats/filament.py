@@ -264,6 +264,13 @@ class FilamentResolver:
             progress = 1.0  # v přehledu u běžícího tisku hlásíme plán celé úlohy (označený jako odhad)
         elif result != "success" and progress <= 0 and session.get("total_layers"):
             progress = (session.get("last_layer") or 0) / max(session["total_layers"], 1)
+        if final and result != "success" and not session.get("print_started_ts"):
+            # Tisk se vůbec nerozběhl – zrušený nebo nahrazený ještě v přípravě. Nic nespotřeboval.
+            # Přípravná session navíc zdědí číslo vrstvy z předchozího, už dotištěného tisku:
+            # 25. 9. 2026 vrstva 935 z minula proti 28 vrstvám kostičky dala „postup" 3 367 %
+            # a fantomových 1 269 g, které srazily plnou cívku na nulu.
+            progress = 0.0
+        progress = max(0.0, min(1.0, progress))   # víc než celý plán se spotřebovat nedá
 
         rows: list[dict] = []
         source, is_est = "none", 0
