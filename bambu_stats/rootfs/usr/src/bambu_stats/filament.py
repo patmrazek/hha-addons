@@ -25,6 +25,12 @@ LIVE_CAP = 0.9          # během tisku odečítat nejvýš 90 % dosud spotřebov
 MIN_STEP_G = 5.0        # menší přírůstky neposílat (šetří zápisy do Spoolmanu)
 
 
+def _barva(c) -> str:
+    """Barvu porovnávat bez `#` a bez průhlednosti: slicer píše `#161616FF`, jindy `#161616`,
+    tiskárna `161616FF`. Jinak se vícebarevný tisk nespáruje se sloty a neodečte vůbec."""
+    return (c or "").strip().lstrip("#").upper()[:6]
+
+
 def _trays(session: dict, key: str) -> list[dict]:
     v = session.get(key)
     if isinstance(v, str):
@@ -84,6 +90,17 @@ class FilamentResolver:
         w = self.ha.numeric(self.printer.ha_weight_entity) if self.printer.ha_weight_entity else None
         l = self.ha.numeric(self.printer.ha_length_entity) if self.printer.ha_length_entity else None
         return w, l
+
+    def _vratka(self, spool_id: int, deducted: float, previous: list[dict]) -> dict:
+        """Nulový řádek, který si pamatuje, co už z cívky odešlo a ještě se nevrátilo."""
+        vzor = next((r for r in previous if r.get("spool_id") == spool_id), {}) or {}
+        return {"filament_idx": None, "ams_id": vzor.get("ams_id"), "tray_id": vzor.get("tray_id"),
+                "tray_global": vzor.get("tray_global"), "tray_info_idx": vzor.get("tray_info_idx"),
+                "material": vzor.get("material") or "", "material_group": vzor.get("material_group") or "",
+                "brand": vzor.get("brand"), "color_hex": vzor.get("color_hex"), "used_g": 0.0, "used_m": None,
+                "source": "refund", "is_estimate": 1, "mapping_source": "vratka",
+                "spool_id": spool_id, "spool_price_per_kg": vzor.get("spool_price_per_kg"),
+                "spool_deducted_g": round(deducted, 2)}
 
     def _rozdel_podle_slotu(self, rows: list[dict], session: dict, trays_start: list[dict]) -> list[dict]:
         """Spotřebu rozdělí mezi sloty se STEJNÝM filamentem, pokud AMS během tisku přepnul cívku.
@@ -199,16 +216,19 @@ class FilamentResolver:
 
     # --- mapování 3MF filamentu na slot ----------------------------------------------
     def _map(self, f: threemf.FilamentUse, trays: list[dict], tray_now: int | None, single: bool) -> tuple[dict | None, str]:
-        color = (f.color or "").upper()
-        for t in trays:
-            if f.tray_info_idx and t.get("info_idx") == f.tray_info_idx and (t.get("color") or "").upper() == color:
-                return t, "exact"
-        if single and tray_now is not None:
+        # U tisku z jednoho filamentu rozhoduje slot, ze kterého tiskárna opravdu tiskne – barva
+        # ve sliceru je jen popisek projektu. 26. 9. 2026 měl projekt barvu bílou, tisklo se
+        # černou ze slotu 4, a párování podle barvy odečítalo z bílé cívky, dokud ji nevyprázdnilo.
+        if single and tray_now is not None and tray_now != 255:
             for t in trays:
                 if t["tray_global"] == tray_now:
                     return t, "tray_now"
+        color = _barva(f.color)
         for t in trays:
-            if color and (t.get("color") or "").upper() == color and material_group(t.get("tray_type")) == material_group(f.type):
+            if f.tray_info_idx and t.get("info_idx") == f.tray_info_idx and _barva(t.get("color")) == color:
+                return t, "exact"
+        for t in trays:
+            if color and _barva(t.get("color")) == color and material_group(t.get("tray_type")) == material_group(f.type):
                 return t, "color"
         return None, "unmapped"
 
@@ -313,42 +333,93 @@ class FilamentResolver:
             if remain_rows and (not rows or (result != "success" and remain_total >= 20)):
                 rows, source, is_est = remain_rows, "ams_remain", 1
 
-        # Spoolman: cívka podle slotu → cena cívky, odečet (jen rozdíl proti už odečtenému, přežije opakovaný resolve)
-        previous = {r["tray_global"]: r for r in self.db.filaments(session["id"]) if r.get("tray_global") is not None}
+        # Spoolman – odečet se účtuje po CÍVKÁCH, ne po slotech.
+        # Během tisku se spotřeba průběžně odečítá z cívky, kterou add-on zrovna odhaduje. Když se
+        # pak ukáže, že tisk šel z jiné cívky (upřesní se slot, dorazí 3MF, AMS přepne), musí se
+        # té první gramy vrátit. Dřív se srovnávalo po slotech: řádek, který se přestěhoval na jiný
+        # slot, prostě zmizel i s tím, co už z cívky strhl – 26. 9. 2026 takhle vyprázdnil bílou
+        # cívku, ze které se netisklo, a z #21 zmizelo 92 g.
+        previous = self.db.filaments(session["id"])
+        prev_by_tray = {r["tray_global"]: r for r in previous if r.get("tray_global") is not None}
+        prev_by_spool: dict[int, float] = {}
+        for r in previous:
+            if r.get("spool_id"):
+                prev_by_spool[r["spool_id"]] = prev_by_spool.get(r["spool_id"], 0.0) + (r.get("spool_deducted_g") or 0)
         live = 1.0 if final else max(0.0, min(1.0, live_progress))   # kolik z plánu je reálně protlačeno
         trays_by_global = {t["tray_global"]: t for t in trays_start}
+        usable = bool(self.spoolman and self.spoolman.enabled and self.spoolman.reachable is not False)
+
+        # 1) ke každému řádku cívku – lokální deník osazení slotů má přednost (ví, co bylo ve slotu
+        #    v době tisku, i když se přiřazení ve Spoolmanu mezitím změnilo)
         for r in rows:
-            prev = previous.get(r["tray_global"]) or {}
-            r["spool_deducted_g"] = prev.get("spool_deducted_g") or 0
+            prev = prev_by_tray.get(r["tray_global"]) or {}
+            r["spool_deducted_g"] = 0.0
             r["spool_id"], r["spool_price_per_kg"] = prev.get("spool_id"), prev.get("spool_price_per_kg")
-            if self.spoolman and self.spoolman.enabled and r["tray_global"] is not None and self.spoolman.reachable is not False:
-                tag = (trays_by_global.get(r["tray_global"]) or {}).get("tray_uuid") or ""
-                # lokální deník osazení slotů má přednost – ví, co bylo ve slotu v době tisku,
-                # i když se přiřazení ve Spoolmanu mezitím změnilo nebo nebyl dostupný
-                journal = self.db.slot_spool_at(self.serial, r["tray_global"], session.get("started_ts") or 0) if self.serial else None
-                sp = None
-                if journal and journal.get("spool_id"):
-                    sp = next((x for x in self.spoolman.spools(include_archived=True) if x["id"] == journal["spool_id"]), None)
-                elif journal:
-                    # ve slotu je cívka, kterou Spoolman ještě nezná (nakoupeno, když byl nedostupný) –
-                    # raději neodečítat vůbec, než strhnout spotřebu z předchozí cívky vedené ve Spoolmanu
-                    LOG.debug("slot %s: cívka bez ID ve Spoolmanu (%s), odečet čeká", r["tray_global"], journal.get("label"))
-                    sp = None
-                else:
-                    sp = self.spoolman.spool_for_tray(r["tray_global"], tag)
-                if sp:
-                    r["spool_id"] = sp["id"]
-                    r["spool_price_per_kg"] = self.spoolman.price_per_kg(sp)
-                    # cíl odečtu: po dokončení celá spotřeba, během tisku max LIVE_CAP plánu (rezerva proti přeodečtení,
-                    # když se plán ještě upřesní – např. dorazí 3MF s nižší hodnotou než cloud)
-                    target = (r["used_g"] or 0) if final else round((r["used_g"] or 0) * live * LIVE_CAP, 2)
-                    delta = target - r["spool_deducted_g"]
-                    if final and delta < -0.05:      # plán revidován dolů → vrátit přeodečtené
-                        if self.spoolman.use(sp["id"], delta):
-                            r["spool_deducted_g"] = target
-                    elif delta > MIN_STEP_G or (final and delta > 0.05):
-                        if self.spoolman.use(sp["id"], delta):
-                            r["spool_deducted_g"] = target
+            if not usable or r["tray_global"] is None:
+                continue
+            tag = (trays_by_global.get(r["tray_global"]) or {}).get("tray_uuid") or ""
+            journal = self.db.slot_spool_at(self.serial, r["tray_global"], session.get("started_ts") or 0) if self.serial else None
+            sp = None
+            if journal and journal.get("spool_id"):
+                sp = next((x for x in self.spoolman.spools(include_archived=True) if x["id"] == journal["spool_id"]), None)
+            elif journal:
+                # ve slotu je cívka, kterou Spoolman ještě nezná – raději neodečítat vůbec, než
+                # strhnout spotřebu z předchozí cívky vedené ve Spoolmanu
+                LOG.debug("slot %s: cívka bez ID ve Spoolmanu (%s), odečet čeká", r["tray_global"], journal.get("label"))
+                r["spool_id"] = None
+            else:
+                sp = self.spoolman.spool_for_tray(r["tray_global"], tag)
+            if sp:
+                r["spool_id"] = sp["id"]
+                r["spool_price_per_kg"] = self.spoolman.price_per_kg(sp)
+
+        if not usable:
+            # Spoolman teď nejde: nic neodečítat a nic neztratit – řádky si ponesou to, co už bylo
+            # odečteno, a cívky, ze kterých tisk odešel, zůstanou jako nulové řádky k pozdějšímu vrácení.
+            for r in rows:
+                prev = prev_by_tray.get(r["tray_global"]) or {}
+                if r.get("spool_id") and r["spool_id"] == prev.get("spool_id"):
+                    r["spool_deducted_g"] = prev.get("spool_deducted_g") or 0.0
+            ucty = {}
+            for r in rows:
+                if r.get("spool_id"):
+                    ucty[r["spool_id"]] = ucty.get(r["spool_id"], 0.0) + r["spool_deducted_g"]
+            for sid, done in prev_by_spool.items():
+                zbyva = done - ucty.get(sid, 0.0)
+                if zbyva > 0.05:
+                    rows.append(self._vratka(sid, zbyva, previous))
+        else:
+            # 2) cíl po cívkách: po dokončení celá spotřeba, během tisku max LIVE_CAP plánu
+            cil: dict[int, float] = {}
+            for r in rows:
+                if r.get("spool_id"):
+                    t = (r["used_g"] or 0) if final else round((r["used_g"] or 0) * live * LIVE_CAP, 2)
+                    r["_cil"] = t
+                    cil[r["spool_id"]] = cil.get(r["spool_id"], 0.0) + t
+            provedeno: dict[int, float] = {}
+            for sid in set(cil) | set(prev_by_spool):
+                target, done = cil.get(sid, 0.0), prev_by_spool.get(sid, 0.0)
+                delta = target - done
+                odesla = sid not in cil          # tisk z téhle cívky odešel úplně → vrátit hned
+                zmena = False
+                if delta < -0.05 and (final or odesla):
+                    zmena = self.spoolman.use(sid, delta)       # vrácení přeodečteného
+                elif delta > MIN_STEP_G or (final and delta > 0.05):
+                    zmena = self.spoolman.use(sid, delta)
+                provedeno[sid] = target if zmena else done
+                if zmena and odesla:
+                    LOG.info("session %s: cívce #%s vráceno %.1f g (tisk z ní nakonec nešel)",
+                             session["id"][-8:], sid, -delta)
+            # 3) odečtené rozepsat zpátky na řádky (poměrem k cíli), ať se to příště dá porovnat
+            for r in rows:
+                sid = r.get("spool_id")
+                if sid:
+                    celkem = cil.get(sid, 0.0)
+                    r["spool_deducted_g"] = round(provedeno.get(sid, 0.0) * (r["_cil"] / celkem), 2) if celkem > 0 else 0.0
+                r.pop("_cil", None)
+            for sid, done in provedeno.items():
+                if sid not in cil and done > 0.05:     # vrácení se nepovedlo – nezapomenout na něj
+                    rows.append(self._vratka(sid, done, previous))
         if rows:
             total_g = round(sum(r["used_g"] or 0 for r in rows), 2)
             ms = [r["used_m"] for r in rows if r["used_m"] is not None]

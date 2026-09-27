@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.18.0 - 2026-09-27
+
+- **Odečty do Spoolmanu se účtují po cívkách, ne po slotech.** Během tisku se spotřeba průběžně
+  odečítá z cívky, kterou add-on zrovna odhaduje. Když se na konci ukázalo, že tisk šel z jiné
+  cívky, dřív se odečetl celek ze správné, ale gramy průběžně stržené té první už se nevrátily.
+  26. 9. 2026 takhle zůstala vyprázdněná bílá cívka, ze které se netisklo, a z #21 zmizelo 92 g.
+  Nově se porovnává, co bylo z každé cívky odečteno, s tím, co z ní tisk opravdu spotřeboval,
+  a rozdíl se dorovná oběma směry. Když Spoolman zrovna nejde, vratka se neztratí – zůstane jako
+  nulový řádek a dorovná se po obnovení spojení.
+- **U tisku z jednoho filamentu rozhoduje slot, ze kterého tiskárna tiskne, ne barva ve sliceru.**
+  Projekt s bílou barvou tištěný černou se dřív přiřadil bílé cívce.
+- **Barvy se porovnávají bez `#` a bez průhlednosti.** Slicer píše `#161616FF`, jindy `#161616`,
+  tiskárna `161616FF`; vícebarevný tisk se kvůli tomu nespároval se sloty a neodečetl vůbec.
+- Fronta nevyřízených nezahrnuje řádky bez slotu (nejdou odečíst nikdy), zato zahrnuje čekající
+  vratky. Log hlásí jen skutečný posun místo „doúčtováno 5 tisků" každých pět minut.
+
+
 ## 0.17.5 - 2026-09-25
 
 - Oprava 0.17.4: fantomová přípravná session se poznávala podle chybějícího času startu, jenže

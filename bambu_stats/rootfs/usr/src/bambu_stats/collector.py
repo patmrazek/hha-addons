@@ -544,11 +544,16 @@ class Collector:
         since = int(time.time()) - days * 86400
         # Cizí tisky (přišly gitem z druhé lokality) neodečítáme – do Spoolmanu zapisuje vždy jen ta
         # instance, u které tiskárna stála. Jinak by je odečetly obě a filament by zmizel dvakrát.
+        # Nevyřízené = něco zbývá odečíst (a řádek má slot, jinak se to odečíst nikdy nedá),
+        # nebo čeká vratka cívce, ze které tisk nakonec nešel. Řádky bez slotu se dřív přepočítávaly
+        # každých pět minut navždy a zahlcovaly log hláškou „doúčtováno 5 tisků".
         return self.db.query("""SELECT s.id, s.subtask_name, s.ended_ts, s.filament_g,
-                                       SUM(COALESCE(f.used_g, 0) - COALESCE(f.spool_deducted_g, 0)) AS pending_g
+                                       SUM(CASE WHEN COALESCE(f.used_g, 0) > COALESCE(f.spool_deducted_g, 0)
+                                                THEN COALESCE(f.used_g, 0) - COALESCE(f.spool_deducted_g, 0) ELSE 0 END) AS pending_g
                                 FROM sessions s JOIN session_filaments f ON f.session_id = s.id
                                 WHERE s.printer_serial = ? AND s.ended_ts IS NOT NULL AND s.ended_ts >= ?
-                                  AND COALESCE(f.used_g, 0) - COALESCE(f.spool_deducted_g, 0) > 0.5
+                                  AND ((COALESCE(f.used_g, 0) - COALESCE(f.spool_deducted_g, 0) > 0.5 AND f.tray_global IS NOT NULL)
+                                       OR (f.mapping_source = 'vratka' AND COALESCE(f.spool_deducted_g, 0) > 0.05))
                                   AND s.manual_override IS NOT 1
                                   AND (s.origin IS NULL OR s.origin = ?)
                                 GROUP BY s.id ORDER BY s.ended_ts""",
@@ -582,7 +587,9 @@ class Collector:
             if self.spoolman.reachable is False:
                 break
         if done:
-            LOG.info("doúčtováno %d tisků do Spoolmanu", done)
+            zbyva = len(self.pending_spool_sessions())
+            if zbyva < len(rows):     # hlásit jen skutečný posun, ne každé marné kolo
+                LOG.info("doúčtováno %d tisků do Spoolmanu (zbývá %d)", len(rows) - zbyva, zbyva)
             self._stats_dirty = True
             self.publish_stats(force=True)
             # Znovu jen když fronta opravdu ubyla. resolve() se u cívky bez ID ve Spoolmanu
