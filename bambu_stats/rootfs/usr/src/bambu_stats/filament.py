@@ -102,6 +102,46 @@ class FilamentResolver:
                 "spool_id": spool_id, "spool_price_per_kg": vzor.get("spool_price_per_kg"),
                 "spool_deducted_g": round(deducted, 2)}
 
+    def _doparuj_podle_useku(self, rows: list[dict], session: dict, trays_start: list[dict]) -> list[dict]:
+        """Filament, který se nespároval podle barvy, přiřadí slotu vylučovací metodou.
+
+        Projekty ze stránek nesou autorovy barvy: 28. 9. 2026 měl projekt zelenou a bílou, Patrik
+        zelenou přiřadil černé ve slotu 2. Tiskárna jela do půlky ze slotu 2, pak ze slotu 3 –
+        bílá se spárovala se slotem 3 podle barvy, zelená nikam a 21 g černé se neodečetlo vůbec.
+        Když zbyde jediný nespárovaný filament a jediný slot, ze kterého tiskárna prokazatelně
+        tiskla, stejného materiálu a nezabraný jiným filamentem, patří k sobě.
+        """
+        nesparovane = [r for r in rows if r.get("tray_global") is None and (r.get("used_g") or 0) > 0]
+        spans = session.get("tray_spans")
+        if isinstance(spans, str):
+            try:
+                spans = json.loads(spans)
+            except ValueError:
+                spans = None
+        if len(nesparovane) != 1 or not spans:
+            return rows
+        konec = (session.get("last_percent") or 100) / 100.0
+        trvani: dict[int, float] = {}
+        for i, sp in enumerate(spans):
+            od = (sp.get("from_pct") or 0) / 100.0
+            do = (spans[i + 1].get("from_pct") or 0) / 100.0 if i + 1 < len(spans) else konec
+            if do > od:
+                trvani[sp["tray"]] = trvani.get(sp["tray"], 0.0) + (do - od)
+        by_global = {t["tray_global"]: t for t in trays_start}
+        obsazene = {r["tray_global"] for r in rows if r.get("tray_global") is not None}
+        r = nesparovane[0]
+        kandidati = [t for t, d in trvani.items()
+                     if d >= 0.02 and t not in obsazene and t in by_global
+                     and material_group(by_global[t].get("tray_type")) == material_group(r.get("material"))]
+        if len(kandidati) != 1:
+            return rows
+        t = by_global[kandidati[0]]
+        r.update(tray_global=t["tray_global"], ams_id=t.get("ams_id"), tray_id=t.get("tray_id"),
+                 tray_info_idx=t.get("info_idx"), mapping_source="vylouceni")
+        LOG.info("session %s: nespárovaný filament %s přiřazen slotu %d vylučovací metodou",
+                 session["id"][-8:], r.get("color_hex"), t["tray_global"] + 1)
+        return rows
+
     def _rozdel_podle_slotu(self, rows: list[dict], session: dict, trays_start: list[dict]) -> list[dict]:
         """Spotřebu rozdělí mezi sloty se STEJNÝM filamentem, pokud AMS během tisku přepnul cívku.
 
@@ -325,6 +365,7 @@ class FilamentResolver:
                                       mapping="tray_now" if tray else "unmapped"))
                 source, is_est = ("cloud_ha", 0) if finished_ok else ("estimate", 1)
 
+        rows = self._doparuj_podle_useku(rows, session, trays_start)
         rows = self._rozdel_podle_slotu(rows, session, trays_start)
 
         if final:

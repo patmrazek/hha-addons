@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.1 - 2026-09-29
+
+- Nespárovaný filament se přiřadí slotu vylučovací metodou: když zbyde jediný filament projektu,
+  který nesedí barvou na žádný slot, a jediný slot stejného materiálu, ze kterého tiskárna
+  prokazatelně tiskla a žádný jiný filament ho nezabral. Projekty ze stránek nesou autorovy barvy
+  (28. 9. 2026 zelená přiřazená černé) a polovina takového tisku se dřív neodečetla nikam.
+
+
 ## 0.18.0 - 2026-09-27
 
 - **Odečty do Spoolmanu se účtují po cívkách, ne po slotech.** Během tisku se spotřeba průběžně
