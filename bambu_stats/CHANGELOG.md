@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.18.2 - 2026-09-29
+
+- **Slot, ze kterého se tiskne, se ukládá průběžně.** Průběžný zápis session (každých 10 s) nesl
+  procenta a vrstvy, ale ne `tray_now_start`, `trays_start` a `tray_spans` – ty se zapsaly jen
+  při začátku a konci tisku. Průběžný odečet i kontrola filamentu přitom čtou z databáze, takže
+  během tisku slot neviděly: tisk začatý před založením filamentu „neměl slot" až do konce,
+  kontrola hlásila unknown nebo varovala podle barvy ve sliceru a průběžný odečet šel na cizí
+  cívku (odtud gramy, které se v 0.18.0 musely vracet). Po restartu add-onu uprostřed tisku se
+  navíc ztrácely úseky po slotech.
+
+
 ## 0.18.1 - 2026-09-29
 
 - Nespárovaný filament se přiřadí slotu vylučovací metodou: když zbyde jediný filament projektu,

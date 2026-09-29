@@ -278,10 +278,17 @@ class Collector:
             for ev in events:
                 self._handle(ev)
             if session and (now - self._last_progress_write >= PROGRESS_WRITE_EVERY_S) and not any(e.kind != "updated" for e in events):
+                # Slot, ze kterého se tiskne, a úseky po slotech se musí ukládat průběžně taky: průběžný
+                # odečet i kontrola filamentu čtou z databáze. Dřív se zapsaly jen při začátku a konci
+                # tisku – tisk, který začal před založením filamentu, pak celou dobu „neměl slot"
+                # (kontrola hlásila unknown, odečet šel podle barvy ve sliceru na cizí cívku) a po
+                # restartu add-onu uprostřed tisku se úseky ztratily.
                 self.db.update_session(session.id, last_percent=session.last_percent, last_layer=session.last_layer,
                                        total_layers=session.total_layers, last_remaining_min=session.last_remaining_min,
                                        last_seen_ts=session.last_seen_ts, predicted_s=session.predicted_s,
-                                       predicted_source=session.predicted_source, status=session.status, paused_s=session.paused_s)
+                                       predicted_source=session.predicted_source, status=session.status, paused_s=session.paused_s,
+                                       tray_now_start=session.tray_now_start, trays_start=session.trays_start,
+                                       tray_spans=session.tray_spans)
                 self._last_progress_write = now
             row = self.sampler.maybe_row(snap, session.id if session else None)
             if row:
