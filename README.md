@@ -8,4 +8,5 @@ vložit `https://github.com/patmrazek/hha-addons`.
 | `bambu_stats` | Historie tisků, lifetime statistiky a spotřeba filamentu pro tiskárny Bambu Lab (SQLite + MQTT Discovery). |
 
 Zdroj a dokumentace: privátní repo `HHA/bambu-monitor/`. Bezpečnostní kontrola před každým publikováním:
-žádné IP adresy, sériová čísla ani access code.
+žádné IP adresy, sériová čísla ani access code. Automatické aktualizace nechte vypnuté – add-on se
+aktualizuje jen mezi tisky.

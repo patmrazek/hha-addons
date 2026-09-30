@@ -33,6 +33,48 @@ def material_group(tray_type: str | None) -> str:
     return "other"
 
 
+# Systémové úlohy firmwaru (kalibrace) spouští tiskárna z tohoto adresáře.
+SYSTEM_GCODE_PREFIX = "/usr/etc/print/"
+
+
+def je_systemova(row: dict) -> bool:
+    """Session systémové úlohy (kalibrace) pro výpočty a přehledy: stačí JEDNO z polí.
+
+    Stavový automat chce pro vyřazení z evidence obě pole (state_machine.je_systemova_uloha),
+    protože to je nevratné. Tady jde jen o to, čemu u session věřit – a kalibrace s jedním
+    zastaralým polem má v cloud entitě pořád hmotnost předchozího tisku.
+    """
+    return (row.get("print_type") or "") == "system" or (row.get("gcode_file") or "").startswith(SYSTEM_GCODE_PREFIX)
+
+
+def je_void(row: dict) -> bool:
+    """Session, která není tiskem: systémová úloha, nebo přípravná session nahrazená skutečnou
+    dřív, než se začalo tisknout (superseded s 0 % do 20 min). Totéž v SQL je VOID_SQL.
+
+    Void se vynechává jen z prezentace (statistiky, historie, last_print, cíl příkazů bez ID) –
+    ledger odečtů, fronta doúčtování, sync ani CSV ho neřeší (M10a)."""
+    return je_systemova(row) or (row.get("end_source") == "superseded" and (row.get("last_percent") or 0) == 0
+                                 and (row.get("duration_s") or 0) <= 1200)
+
+
+# NULL-safe: každý sloupec přes COALESCE. Holé `end_source = 'superseded'` dá u NULL hodnotu NULL a `NOT (…)`
+# pak session vyřadí z obou množin – tisk bez end_source by nebyl ani void, ani tisk. GLOB místo LIKE,
+# protože LIKE v SQLite nerozlišuje velikost písmen a Python startswith ano.
+VOID_SQL = ("(COALESCE(print_type, '') = 'system' OR COALESCE(gcode_file, '') GLOB '" + SYSTEM_GCODE_PREFIX + "*'"
+            " OR (COALESCE(end_source, '') = 'superseded' AND COALESCE(last_percent, 0) = 0"
+            " AND COALESCE(duration_s, 0) <= 1200))")
+
+
+def je_vlastni(row: dict, instance: str | None) -> bool:
+    """Session zapsaná touto instancí: bez origin (ještě neexportovaná), nebo origin = sync_instance.
+
+    Cizí session přišla gitem z druhé lokality – opravuje ji a do Spoolmanu za ni zapisuje jen ta.
+    Bez sync_instance je vlastní jen session bez origin (stejně jako ve frontě doúčtování).
+    """
+    origin = row.get("origin")
+    return origin is None or (bool(instance) and origin == instance)
+
+
 def to_int(v, default=0) -> int:
     try:
         return int(float(v))

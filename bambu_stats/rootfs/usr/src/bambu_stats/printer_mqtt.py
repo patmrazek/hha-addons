@@ -4,7 +4,7 @@
 - `pushall` po každém připojení (a jako pojistka každých 5 min),
 - deep-merge příchozích zpráv do jednoho stavu (P2S posílá plný stav, P1/X1 delty),
 - TOFU připnutí certifikátu tiskárny (cert je self-signed, CN = sériové číslo),
-- hlídání ticha: bez zprávy > 60 s → reconnect.
+- hlídání ticha: bez zprávy > 90 s (i od připojení bez jediné zprávy) → reconnect.
 
 Callback `on_state(state: dict, now: float)` dostává slučovaný obsah sekce `print`.
 """
@@ -24,7 +24,7 @@ import paho.mqtt.client as mqtt
 LOG = logging.getLogger("printer")
 
 PUSHALL = {"pushing": {"sequence_id": "0", "command": "pushall"}}
-STALE_AFTER_S = 60
+STALE_AFTER_S = 90
 PUSHALL_EVERY_S = 300
 
 
@@ -49,14 +49,25 @@ class PrinterMQTT:
         self.connected = False
         self.last_msg_ts: float = 0.0
         self.msg_count = 0
+        # vznik klienta a poslední připojení (monotonic jako last_msg_ts) – collector podle nich pozná
+        # spojení, ze kterého nikdy nepřišla zpráva (samoozdravení, M7a)
+        self.created_ts: float = time.monotonic()
+        self._connected_at: float = 0.0
         self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
         self._client: mqtt.Client | None = None
         self._backoff = 1.0
         self._last_pushall = 0.0
 
     # --- veřejné ---------------------------------------------------------
     def start(self):
-        threading.Thread(target=self._run, name=f"printer-{self.serial[-4:]}", daemon=True).start()
+        self._thread = threading.Thread(target=self._run, name=f"printer-{self.serial[-4:]}", daemon=True)
+        self._thread.start()
+
+    @property
+    def thread_alive(self) -> bool:
+        """Běží smyčka _run? Po jejím pádu (nebo po stop()) se klient sám znovu nepřipojí."""
+        return bool(self._thread and self._thread.is_alive())
 
     def stop(self):
         self._stop.set()
@@ -72,8 +83,16 @@ class PrinterMQTT:
             self._last_pushall = time.monotonic()
 
     @property
+    def ticho_s(self) -> float:
+        """Jak dlouho připojení mlčí: od poslední zprávy, nebo od připojení, když od něj žádná nepřišla."""
+        return time.monotonic() - max(self.last_msg_ts, self._connected_at)
+
+    @property
     def stale(self) -> bool:
-        return self.connected and self.last_msg_ts and (time.monotonic() - self.last_msg_ts) > STALE_AFTER_S
+        # Počítá se i připojení, ze kterého ještě nepřišla žádná zpráva: dřív jen od poslední zprávy,
+        # takže spojení bez jediné zprávy (zaseknutý broker tiskárny) viselo navždy – a naopak hned po
+        # znovupřipojení platila stará zpráva a spojení se shazovalo dřív, než stihla přijít odpověď na pushall.
+        return bool(self.connected and self.ticho_s > STALE_AFTER_S)
 
     # --- interní -----------------------------------------------------------
     def _build(self) -> mqtt.Client:
@@ -114,6 +133,7 @@ class PrinterMQTT:
         if rc != 0 and str(rc) != "Success":
             LOG.warning("připojení k tiskárně odmítnuto: %s", rc)
             return
+        self._connected_at = time.monotonic()
         self.connected = True
         self._backoff = 1.0
         try:
@@ -160,7 +180,7 @@ class PrinterMQTT:
                     if not self.connected:
                         continue
                     if self.stale:
-                        LOG.warning("tiskárna %d s mlčí, reconnect", int(time.monotonic() - self.last_msg_ts))
+                        LOG.warning("tiskárna %d s mlčí, reconnect", int(self.ticho_s))
                         break
                     if time.monotonic() - self._last_pushall > PUSHALL_EVERY_S:
                         self.request_pushall()

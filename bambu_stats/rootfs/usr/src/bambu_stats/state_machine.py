@@ -1,4 +1,4 @@
-"""Stavový automat tiskových session – čistá logika bez I/O.
+"""Stavový automat tiskových session – čistá logika bez I/O (jen log).
 
 Vstupem je `Snapshot` (normalizovaný výřez sekce `print` z MQTT), výstupem seznam `Event`ů,
 které collector persistuje. Automat drží jednu aktivní `Session` a umí se obnovit
@@ -7,14 +7,20 @@ z otevřené session v databázi (restart uprostřed tisku).
 Fáze:  NONE → PREPARING → RUNNING ⇄ PAUSED → (FINISH | FAILED | IDLE) → NONE
 Debounce: přechod se provede až po dvou po sobě jdoucích zprávách se stejným gcode_state
 (P2S posílá ~1 zprávu/s, zpoždění je tedy ~2 s).
+
+Systémové úlohy tiskárny (kalibrace z /usr/etc/print/) se neevidují vůbec – nejsou to tisky,
+nespotřebují filament a ve statistikách by se počítaly jako úspěšný tisk.
 """
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import asdict, dataclass, field
 
 from . import hms as hmsmod
-from .util import color_hex, to_float, to_int, ulid
+from .util import SYSTEM_GCODE_PREFIX, color_hex, to_float, to_int, ulid
+
+LOG = logging.getLogger("state_machine")
 
 GS_PREPARING = {"PREPARE", "SLICING", "INIT"}
 GS_RUNNING = {"RUNNING"}
@@ -157,6 +163,22 @@ def fingerprint(serial: str, s: Snapshot) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
+def je_systemova_uloha(s: Snapshot) -> bool:
+    """Kalibrace a jiné úlohy firmwaru (29. 9. 2026 auto_cali_for_user_param.gcode, 24 min).
+
+    Musí platit OBĚ pole: vyřazení z evidence je nevratné (nevznikne session, odečet ani historie),
+    kdežto omylem evidovanou kalibraci pozdější filtr ve statistikách levně odfiltruje. print_type
+    i gcode_file přežívají ve slučovaném stavu MQTT, takže jedno zastaralé pole samo nerozhoduje.
+    V datech se obě pole přepínají ve stejné zprávě. Vzor názvu auto_cali* se schválně nepoužívá –
+    takhle se klidně může jmenovat i soubor uživatele.
+    """
+    return s.print_type == "system" and (s.gcode_file or "").startswith(SYSTEM_GCODE_PREFIX)
+
+
+def _napul_systemova(s: Snapshot) -> bool:
+    return s.print_type == "system" or (s.gcode_file or "").startswith(SYSTEM_GCODE_PREFIX)
+
+
 # ---------------------------------------------------------------------------
 @dataclass
 class Session:
@@ -255,11 +277,14 @@ class StateMachine:
         self._recent_serious: list[tuple[float, str]] = []
         self._hms_first_seen: dict[str, float] = {}
         self._seeded_hms = False
+        self._systemova_hlasena: str | None = None   # otisk systémové úlohy, o které už je řádek v logu
 
     # --- veřejné -----------------------------------------------------------
     def feed(self, s: Snapshot) -> list[Event]:
         events: list[Event] = []
         self._track_hms(s)
+        if not s.is_active:
+            self._systemova_hlasena = None           # další kalibrace se zaloguje znovu
         if self._first:
             self._first = False
             self._prev_gs = s.gcode_state
@@ -272,24 +297,36 @@ class StateMachine:
             events += self._grace(s)
             return events
         if not stable:
-            if self.session and s.is_active:
+            if self.session and s.is_active and not self._systemova_v_priprave(s):
                 self._update_progress(s)
             return events
         gs = s.gcode_state
         if self.session is None:
             if s.is_active:
-                events.append(self._open(s, start_source="observed"))
+                ev = self._otevri_pokud_neni_systemova(s, start_source="observed")
+                if ev:
+                    events.append(ev)
             return events
         # aktivní session
         sess = self.session
         if s.is_active and self._superseded(s):
             events.append(self._close(s, result="unknown", confidence="low", end_source="superseded",
                                       ended_ts=sess.last_seen_ts or int(s.ts), kind="superseded"))
-            events.append(self._open(s, start_source="observed"))
+            # Po zmeškaném konci tisku může rovnou běžet kalibrace – starou session uzavřít, ale
+            # kalibraci neotevírat (jinak by převzala cloud hmotnost předchozího tisku).
+            ev = self._otevri_pokud_neni_systemova(s, start_source="observed")
+            if ev:
+                events.append(ev)
             return events
         if gs in GS_PREPARING:
             self._update_progress(s)
         elif gs in GS_RUNNING:
+            if self._systemova_v_priprave(s):
+                # Kalibrace během přípravy skutečného tisku: snímek k téhle session nepatří. Kdyby
+                # převzal ID a otisk, skutečný tisk by pak session nahradil (superseded se 100 %
+                # z kalibrace) a odečetlo by se dvakrát.
+                self._hlas_systemovou(s)
+                return events
             if sess.status == "preparing":
                 sess.status = "running"
                 sess.print_started_ts = int(s.ts)
@@ -298,6 +335,16 @@ class StateMachine:
                 self._update_progress(s)
                 events.append(Event("started", sess, s))
             elif sess.status == "paused":
+                if sess.print_started_ts is None:
+                    # Pauza ještě v přípravě: tisk teprve teď opravdu začíná – totéž co u 'preparing'.
+                    # Bez toho by zůstal bez času startu a otisku a průběh by se nikdy nepřevzal.
+                    sess.print_started_ts = int(s.ts)
+                    sess.fingerprint = fingerprint(self.serial, s)
+                    self._copy_ids(s)
+                    # Pauza patří k přípravě, ne k tisku: active_print_s se počítá od print_started_ts,
+                    # takže by se v paused_s odečetla podruhé. Řádek pauzy v databázi zůstává.
+                    sess._pause_started = None
+                    events.append(Event("started", sess, s))
                 self._end_pause(s.ts)
                 sess.status = "running"
                 self._update_progress(s)
@@ -314,6 +361,16 @@ class StateMachine:
                 events.append(Event("paused", sess, s, note=self._pause_reason(s)))
             else:
                 self._update_progress(s)
+        elif gs in GS_TERMINAL and self._systemova_v_priprave(s):
+            # Systémová úloha doběhla (FINISH/FAILED), zatímco otevřená session ještě nezačala tisknout.
+            # Tiskárna dvě úlohy naráz nedělá, takže příprava skončila bez tisku (konec zmeškaný) –
+            # uzavřít jako zrušení bez převzetí 100 % ani chyb kalibrace. FINISH by jinak z přípravy
+            # udělal úspěch a odečetl celý plán; ignorovat ho nejde, session by visela do dalšího tisku
+            # a převzala by ho i se starým začátkem.
+            LOG.info("systémová úloha %s skončila během přípravy %s – přípravu uzavírám jako zrušenou",
+                     s.subtask_name or s.gcode_file, sess.subtask_name or sess.id)
+            events.append(self._close(s, result="cancelled", confidence="low", end_source="inferred",
+                                      ended_ts=sess.last_seen_ts or int(s.ts)))
         elif gs == GS_FINISH:
             self._update_progress(s)
             events.append(self._close(s, result="success", confidence="high", end_source="observed"))
@@ -333,12 +390,26 @@ class StateMachine:
         sess = self.session
         fp = fingerprint(self.serial, s)
         if sess:
+            if self._pred_startem() and (sess.last_percent or sess.last_layer):
+                # Řádek uložený 0.18.2 v přípravě nese procenta a vrstvu MINULÉHO tisku (0.18.2 je
+                # v přípravě přebírala). Přenesené dál by průběžný odečet strhl 90 % plánu a zrušení
+                # v přípravě by odečetlo celý plán; vadily by i kontrole věrohodnosti níž. Od 0.19.0
+                # tu jsou vždy nuly (viz _update_progress), takže se tím mění jen přechodový případ.
+                LOG.info("session %s ještě netiskla, ale nese %s %% / vrstvu %s z minulého tisku – nuluji",
+                         sess.subtask_name or sess.id, sess.last_percent, sess.last_layer)
+                sess.last_percent = 0
+                sess.last_layer = 0
             same = (fp == sess.fingerprint) or (s.subtask_name and s.subtask_name == sess.subtask_name
                                                  and s.task_id == sess.task_id)
             plausible = s.percent >= sess.last_percent - 5 or s.layer >= sess.last_layer - 1
             if s.is_active and same and plausible:
                 if sess.status == "paused" and s.gcode_state in GS_RUNNING:
-                    sess.paused_s += max(0, int(s.ts) - (sess.last_seen_ts or int(s.ts)))
+                    if sess.print_started_ts is None:
+                        # Pauza byla ještě v přípravě: tisk začíná teď a pauza se do doby tisku
+                        # nepočítá (active_print_s se odečítá od print_started_ts) – jako ve feed().
+                        sess.print_started_ts = int(s.ts)
+                    else:
+                        sess.paused_s += max(0, int(s.ts) - (sess.last_seen_ts or int(s.ts)))
                     sess.status = "running"
                 elif s.gcode_state in GS_PAUSED and sess.status != "paused":
                     sess.status = "paused"
@@ -364,16 +435,46 @@ class StateMachine:
             events.append(self._close(s, result="unknown", confidence="low", end_source="lost",
                                       ended_ts=sess.last_seen_ts or int(s.ts), kind="lost"))
         if s.is_active:
-            if s.percent > 0 and s.remaining_min > 0 and s.percent < 100:
+            # V přípravě tiskárna hlásí procenta minulého tisku (zastaralých 100 %): z nich nejde
+            # odhadnout začátek ani poznat, že tisk už běží (incomplete by pustilo fix_start_from_cloud,
+            # a to by mohlo převzít začátek předchozího tisku).
+            pripravuje = s.gcode_state in GS_PREPARING
+            if not pripravuje and s.percent > 0 and s.remaining_min > 0 and s.percent < 100:
                 elapsed = s.remaining_min * 60 * s.percent / (100 - s.percent)
-                ev = self._open(s, start_source="estimated_pct", started_ts=int(s.ts - elapsed))
+                ev = self._otevri_pokud_neni_systemova(s, start_source="estimated_pct", started_ts=int(s.ts - elapsed))
             else:
-                ev = self._open(s, start_source="observed")
-            ev.session.incomplete = 1 if s.percent > 0 else 0
-            events.append(ev)
+                ev = self._otevri_pokud_neni_systemova(s, start_source="observed")
+            if ev:
+                ev.session.incomplete = 1 if s.percent > 0 and not pripravuje else 0
+                events.append(ev)
         return events
 
     # --- pomocné ---------------------------------------------------------------
+    def _otevri_pokud_neni_systemova(self, s: Snapshot, start_source: str, started_ts: int | None = None) -> Event | None:
+        """Jediné místo, kudy vzniká nová session – systémová úloha (kalibrace) se neotevře nikdy."""
+        if je_systemova_uloha(s):
+            self._hlas_systemovou(s)
+            return None
+        if _napul_systemova(s):
+            LOG.warning("úloha %s vypadá jako systémová jen napůl (print_type %s, gcode %s) – eviduji ji jako tisk",
+                        s.subtask_name or "?", s.print_type or "?", s.gcode_file or "?")
+        return self._open(s, start_source=start_source, started_ts=started_ts)
+
+    def _pred_startem(self) -> bool:
+        """Otevřená session ještě nezačala tisknout: příprava, nebo pauza v ní."""
+        sess = self.session
+        return bool(sess and (sess.status == "preparing" or (sess.status == "paused" and sess.print_started_ts is None)))
+
+    def _systemova_v_priprave(self, s: Snapshot) -> bool:
+        """Snímek systémové úlohy, zatímco otevřená session ještě nezačala tisknout."""
+        return self._pred_startem() and je_systemova_uloha(s)
+
+    def _hlas_systemovou(self, s: Snapshot):
+        fp = fingerprint(self.serial, s)
+        if self._systemova_hlasena != fp:
+            self._systemova_hlasena = fp
+            LOG.info("systémová úloha %s se neeviduje", s.subtask_name or s.gcode_file)
+
     def _open(self, s: Snapshot, start_source: str, started_ts: int | None = None) -> Event:
         now = int(s.ts)
         running = s.gcode_state in GS_RUNNING or s.gcode_state in GS_PAUSED
@@ -400,8 +501,16 @@ class StateMachine:
 
     def _update_progress(self, s: Snapshot):
         sess = self.session
-        sess.last_percent = max(s.percent, 0)
-        sess.last_layer = s.layer
+        # Dokud tisk nebyl vidět v RUNNING, hlásí tiskárna procenta a vrstvu MINULÉHO tisku
+        # (24. 9. 2026 M39S6SNA: SLICING se 100 % a vrstvou 21/21 z předchozího tisku, pak FAILED).
+        # Převzaté by udělaly ze zrušení v přípravě úspěch a zrušený tisk by odečetl celý plán;
+        # průběžný odečet by po otevření session rovnou strhl 90 % plánu. Platí pro celou přípravu
+        # (PREPARE, SLICING, INIT), pro pauzu v ní i pro FAILED; FINISH se převezme vždy.
+        # Přijatá daň: výpadek spojení od přípravy až do FAILED bez zachyceného RUNNING dá 0 g
+        # (tisk zrušený v 60 % se neodečte) – opravuje se ručně.
+        if not (sess.print_started_ts is None and s.gcode_state not in GS_RUNNING and s.gcode_state != GS_FINISH):
+            sess.last_percent = max(s.percent, 0)
+            sess.last_layer = s.layer
         sess.total_layers = s.total_layers or sess.total_layers
         sess.last_remaining_min = s.remaining_min
         sess.last_seen_ts = int(s.ts)
@@ -433,12 +542,20 @@ class StateMachine:
 
     def _superseded(self, s: Snapshot) -> bool:
         sess = self.session
-        if sess.status == "preparing":
+        # Session, která ještě nezačala tisknout (příprava i pauza v ní), se nenahrazuje: ID se mezi
+        # přípravou a startem mění (24. 9. 2026 M39S6SNA: v přípravě task_id '0') a start ji převezme.
+        if self._pred_startem():
             return False
         ids_changed = (s.subtask_name and sess.subtask_name and s.subtask_name != sess.subtask_name) or \
                       (s.task_id and sess.task_id and s.task_id != sess.task_id and s.task_id != "0")
-        regressed = (s.percent < sess.last_percent - 5) or (sess.last_layer > 1 and s.layer < sess.last_layer - 1) or \
-                    (sess.last_remaining_min and s.remaining_min > sess.last_remaining_min + 30)
+        # Zbývající čas nerozhoduje: skáče při přepnutí rychlosti (silent ho skoro zdvojnásobí) i po
+        # kalibracích na začátku tisku (24. 9. 2026 v 8 % z 85 na 156 min) – dělil jeden tisk na dva
+        # a odečet pak dával 140 % plánu. Pokles vrstvy se bere až od 5 %: na začátku RUNNING tiskárna
+        # ještě pár sekund hlásí vrstvu minulého tisku (56 → 0) a za běhu k poklesu jinak nedochází.
+        # Zmeškaný přechod mezi dvěma tisky pozná změna ID (task_id je unikátní i u LAN tisků);
+        # zmeškaný přechod pod 5 % bez změny ID se sloučí do jedné session.
+        regressed = (s.percent < sess.last_percent - 5) or \
+                    (sess.last_percent >= 5 and sess.last_layer > 1 and s.layer < sess.last_layer - 1)
         return bool(ids_changed or (regressed and s.gcode_state in GS_RUNNING))
 
     def _end_pause(self, ts: float):

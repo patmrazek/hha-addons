@@ -23,7 +23,10 @@ from dataclasses import dataclass, field
 from xml.etree import ElementTree
 
 LOG = logging.getLogger("threemf")
-SEARCH_DIRS = ("/", "/cache", "/sdcard", "/usb", "/mnt/usb", "/media/usb", "/model", "/data")
+# '/cache' před '/' jako v ha-bambulab: stejné jméno bývá v obou (25. 9. 2026 „Cube 2 + …" deska 2
+# v '/cache', deska 3 ve '/') a novější úlohy leží v '/cache'. Řazení podle času souboru (MDTM/MLSD)
+# se přidá až po ověření výpisem FTP na P2S.
+SEARCH_DIRS = ("/cache", "/", "/sdcard", "/usb", "/mnt/usb", "/media/usb", "/model", "/data")
 
 
 class ImplicitFTP_TLS(ftplib.FTP_TLS):
@@ -92,9 +95,15 @@ def parse_slice_info(xml_bytes: bytes) -> list[PlateInfo]:
     return plates
 
 
-def plate_index_from_gcode(gcode_file: str) -> int:
+def explicitni_deska(gcode_file: str) -> int | None:
+    """Číslo desky, jen když ho gcode_file opravdu uvádí (…/plate_N.gcode), jinak None."""
     m = re.search(r"plate_(\d+)\.gcode", gcode_file or "")
-    return int(m.group(1)) if m else 1
+    return int(m.group(1)) if m else None
+
+
+def plate_index_from_gcode(gcode_file: str) -> int:
+    deska = explicitni_deska(gcode_file)
+    return deska if deska is not None else 1
 
 
 class PrinterFTP:
@@ -124,23 +133,34 @@ class PrinterFTP:
             ftp.quit()
         return out
 
-    def find_3mf(self, name: str) -> str | None:
-        """Najde .3mf soubor pro název úlohy (subtask_name); vrátí cestu nebo None."""
-        want = {f"{name}.3mf", f"{name}.gcode.3mf", name}
+    def find_3mf(self, name: str) -> list[str]:
+        """Všechny 3MF, které k úloze (subtask_name) patří PŘESNĚ jménem, v pořadí, v jakém je zkoušet.
+
+        Shoda podle začátku jména se nepoužívá: 25. 9. 2026 dostaly tisky „Cube" 3MF projektu
+        „Cube 2 + Cube 2 + …" a z cívky odešlo 54,36 g místo 8,81 g. `{name}.gcode.3mf` (vyslicovaná
+        úloha) má přednost před `{name}.3mf` (projekt zkopírovaný na USB může nést starý slice_info),
+        holé jméno jen tehdy, když samo končí na .3mf. Pak rozhoduje pořadí adresářů (SEARCH_DIRS).
+        Vrací se všichni kandidáti – stejné jméno bývá ve více adresářích a desku z nich vybere fetch_plate.
+        """
+        jmena = [f"{name}.gcode.3mf", f"{name}.3mf"]
+        if name.lower().endswith(".3mf"):
+            jmena.append(name)
+        nalezene: dict[str, tuple[int, int]] = {}
         ftp = self._connect()
         try:
-            for d in SEARCH_DIRS:
+            for poradi, d in enumerate(SEARCH_DIRS):
                 try:
                     entries = ftp.nlst(d)
                 except (ftplib.error_perm, ftplib.error_temp, OSError):
                     continue
                 for e in entries:
                     base = e.rsplit("/", 1)[-1]
-                    if base in want or (base.lower().endswith(".3mf") and base.lower().startswith(name.lower())):
-                        return e if e.startswith("/") else f"{d.rstrip('/')}/{base}"
+                    if base in jmena:
+                        cesta = e if e.startswith("/") else f"{d.rstrip('/')}/{base}"
+                        nalezene.setdefault(cesta, (jmena.index(base), poradi))
         finally:
             ftp.quit()
-        return None
+        return sorted(nalezene, key=nalezene.__getitem__)
 
     def read_slice_info(self, path: str) -> bytes | None:
         """Stáhne 3MF (je to ZIP) a vrátí obsah Metadata/slice_info.config."""
@@ -162,19 +182,37 @@ class PrinterFTP:
 
 
 def fetch_plate(host: str, access_code: str, subtask_name: str, gcode_file: str) -> tuple[str, PlateInfo | None, str | None]:
-    """Vrátí (status, plate, path). status ∈ ok|not_found|error."""
+    """Vrátí (status, plate, path). status ∈ ok|not_found|mismatch|error.
+
+    Kandidáty z find_3mf zkouší po řadě. Když gcode_file uvádí desku (plate_N), platí první 3MF,
+    který tu desku obsahuje – tiskárna umí nechat pod stejným jménem soubor s jinou deskou nebo
+    starší verzi projektu. Nemá-li ji žádný, vrátí konečný stav 'mismatch' (cesta prvního kandidáta):
+    dřív se vzala první deska souboru a s ní cizí hmotnost i čas (Cube: deska 3 místo 5, 54,36 g).
+    Bez plate_N v názvu (kalibrace, tisk ze SD) zůstává dosavadní výběr: deska 1, jinak první deska.
+    """
     try:
         ftp = PrinterFTP(host, access_code)
-        path = ftp.find_3mf(subtask_name)
-        if not path:
+        paths = ftp.find_3mf(subtask_name)
+        if not paths:
             return "not_found", None, None
-        xml = ftp.read_slice_info(path)
-        if not xml:
-            return "error", None, path
-        plates = parse_slice_info(xml)
-        want = plate_index_from_gcode(gcode_file)
-        plate = next((p for p in plates if p.index == want), plates[0] if plates else None)
-        return ("ok" if plate else "error"), plate, path
+        want = explicitni_deska(gcode_file)
+        precteno = False
+        for path in paths:
+            xml = ftp.read_slice_info(path)
+            if not xml:
+                continue
+            precteno = True
+            plates = parse_slice_info(xml)
+            if want is None:
+                plate = next((p for p in plates if p.index == 1), plates[0] if plates else None)
+            else:
+                plate = next((p for p in plates if p.index == want), None)
+            if plate:
+                return "ok", plate, path
+        if want is not None and precteno:
+            LOG.info("3MF k úloze %s nemá desku %d (%s) – nepoužije se", subtask_name, want, ", ".join(paths))
+            return "mismatch", None, paths[0]
+        return "error", None, paths[0]
     # ftplib.all_errors je sama n-tice – vnořená do další ji Python 3.12 odmítne až ve chvíli,
     # kdy výjimka opravdu nastane (TypeError místo tichého přeskočení). Proto rozbalit.
     except (OSError, ssl.SSLError, socket.timeout, *ftplib.all_errors) as e:

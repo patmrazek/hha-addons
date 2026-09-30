@@ -33,13 +33,17 @@ def _stejna_sit(a: str, b: str, prefix: int = 24) -> bool:
         return False
 
 
-def moje_site(timeout: float = 5.0) -> list[ipaddress.IPv4Network]:
+def moje_site(timeout: float = 5.0) -> list[ipaddress.IPv4Network] | None:
     """Podsítě, ve kterých stojí sám hostitel HA.
 
     Add-on běží v kontejneru s vlastní adresou (172.30.x.x), takže adresa zvolená pro spojení
     by vyšla vždy cizí a i tiskárna v sousedním pokoji by vypadala, že je za VPN. Skutečné sítě
-    zná Supervisor; bez něj (testy, běh mimo HA) se vrátí prázdný seznam a rozhodne se podle
-    adresy spojení.
+    zná Supervisor; bez něj (testy, běh mimo HA, bez SUPERVISOR_TOKEN) se vrátí prázdný seznam
+    a rozhodne se podle adresy spojení.
+
+    None = nerozhodnuto: token je, ale Supervisor neodpověděl. Náhradní rozhodnutí podle adresy
+    kontejneru by pak vyšlo vždy „přes VPN“ a živá instance by se stáhla, i když tiskárna stojí
+    vedle (M7a) – collector v tom případě režim nemění.
     """
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
@@ -49,9 +53,9 @@ def moje_site(timeout: float = 5.0) -> list[ipaddress.IPv4Network]:
                                      headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read().decode())
-    except Exception as e:  # noqa: BLE001 – bez Supervisoru se prostě rozhodne jinak
-        LOG.debug("sítě hostitele se nepodařilo zjistit: %s", e)
-        return []
+    except Exception as e:  # noqa: BLE001 – bez odpovědi Supervisoru se nerozhoduje
+        LOG.warning("sítě hostitele se nepodařilo zjistit (%s) – umístění tiskárny teď nerozhoduji", e)
+        return None
     site = []
     for i in (data.get("data", data).get("interfaces") or []):
         for adr in ((i.get("ipv4") or {}).get("address") or []):
@@ -62,11 +66,13 @@ def moje_site(timeout: float = 5.0) -> list[ipaddress.IPv4Network]:
     return site
 
 
-def kde_je_tiskarna(hosts: list[str], port: int = MQTT_PORT, timeout: float = 2.0) -> tuple[str | None, bool]:
+def kde_je_tiskarna(hosts: list[str], port: int = MQTT_PORT, timeout: float = 5.0) -> tuple[str | None, bool | None]:
     """Vrátí (adresa, je_lokalne) pro první adresu, na které tiskárna odpovídá.
 
     `je_lokalne=False` znamená, že tiskárna sice odpovídá, ale přes VPN — tedy stojí
-    u druhé lokality a sledovat ji má ta druhá instance.
+    u druhé lokality a sledovat ji má ta druhá instance. `je_lokalne=None` = nerozhodnuto
+    (Supervisor nevrátil sítě hostitele, viz moje_site). Na každou adresu jeden pokus – opakuje
+    se až v dalším kole plánovače, jinak by vypnutá tiskárna blokovala plánovač desítky sekund.
     """
     for host in hosts:
         if not host:
@@ -77,6 +83,8 @@ def kde_je_tiskarna(hosts: list[str], port: int = MQTT_PORT, timeout: float = 2.
         except OSError:
             continue
         site = moje_site()
+        if site is None:
+            return host, None
         if site:
             try:
                 ip = ipaddress.ip_address(host)
@@ -91,8 +99,10 @@ def kde_je_tiskarna(hosts: list[str], port: int = MQTT_PORT, timeout: float = 2.
     return None, False
 
 
-def popis(host: str | None, lokalne: bool) -> str:
+def popis(host: str | None, lokalne: bool | None) -> str:
     if not host:
         return "tiskárna neodpovídá na žádné známé adrese"
+    if lokalne is None:
+        return f"tiskárna na {host} odpovídá, ale sítě hostitele se nepodařilo zjistit – nerozhodnuto"
     return f"tiskárna na {host} " + ("v místní síti – sleduje ji tato instance"
                                      if lokalne else "je vidět jen přes VPN – sleduje ji druhá lokalita")

@@ -5,15 +5,26 @@ ale vždy sériově. WAL + synchronous=NORMAL kvůli šetření flash/SD.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import sqlite3
+import tempfile
 import threading
 import time
 from pathlib import Path
 
+from .util import VOID_SQL
+
 LOG = logging.getLogger("db")
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+
+# umask procesu pro práva CSV exportu. os.umask jde přečíst jen tak, že se nastaví a vrátí – proto
+# jednou při importu modulu (před startem vláken), ne za běhu, kdy by souběžně zakládaný soubor
+# dostal cizí masku.
+_UMASK = os.umask(0o022)
+os.umask(_UMASK)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -36,7 +47,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   nozzle_type TEXT, nozzle_diameter TEXT, spd_lvl INTEGER, tray_now_start INTEGER,
   trays_start TEXT, trays_end TEXT, tray_spans TEXT,
   threemf_path TEXT, threemf_status TEXT, threemf_fetched_ts INTEGER,
-  incomplete INTEGER DEFAULT 0, manual_override INTEGER DEFAULT 0, notes TEXT,
+  incomplete INTEGER DEFAULT 0, manual_override INTEGER DEFAULT 0, manual_plan_g REAL, manual_plan_m REAL, notes TEXT,
   origin TEXT, synced_ts INTEGER, cover TEXT, quality TEXT, quality_note TEXT,
   created_ts INTEGER, updated_ts INTEGER, last_seen_ts INTEGER);
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_open ON sessions(printer_serial, fingerprint) WHERE ended_ts IS NULL;
@@ -80,6 +91,8 @@ class Database:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
+        self._sloupce_cache: dict[str, set[str]] = {}      # PRAGMA table_info pro import ze sync repa
+        self._zahozene: dict[str, set[str]] = {}           # neznámé klíče z importu, už zalogované
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         with self.lock:
@@ -106,6 +119,12 @@ class Database:
                 self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
         if "tray_spans" not in cols:      # úseky tisku po slotech kvůli auto-refillu AMS
             self.conn.execute("ALTER TABLE sessions ADD COLUMN tray_spans TEXT")
+        # Schema 8: ruční plán (set_plan). Jen v sessions – nové sloupce v ostatních tabulkách by starší
+        # verze při importu ze sync repa zahodila nebo na nich spadla (pravidlo pro 0.19.x). Do dataclass
+        # Session nepatří: upsert ze stavového automatu (to_row) by je při pauze a konci tisku přepsal.
+        for col in ("manual_plan_g", "manual_plan_m"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
         # Deník slotů se nově sdílí mezi lokalitami, takže potřebuje přirozený klíč — jinak by
         # import stejnou výměnu přidával znovu při každé synchronizaci. Starší databáze můžou
         # mít duplicity z doby bez klíče, ty se nejdřív sloučí (ponechá se nejnovější zápis).
@@ -118,7 +137,48 @@ class Database:
             if col not in fcols:
                 self.conn.execute(f"ALTER TABLE session_filaments ADD COLUMN {col} {typ}")
         if v < SCHEMA_VERSION:
+            LOG.info("DB schema %d → %d", v, SCHEMA_VERSION)
             self.set_meta("schema_version", str(SCHEMA_VERSION))
+
+    @contextlib.contextmanager
+    def _savepoint(self, jmeno: str):
+        """Transakce, která jde vnořit (SAVEPOINT místo BEGIN). Po celou dobu drží db.lock: spojení je
+        jedno pro všechna vlákna a zápis jiného vlákna (vzorek z MQTT, průběžný odečet) by jinak skončil
+        v téže transakci – ROLLBACK by ho smazal a BEGIN v replace_filaments by spadl až po use()
+        do Spoolmanu, tedy s dvojím odečtem v příštím kole."""
+        with self.lock:
+            self.conn.execute(f"SAVEPOINT {jmeno}")
+            try:
+                yield
+            except BaseException:
+                self.conn.execute(f"ROLLBACK TO {jmeno}")
+                self.conn.execute(f"RELEASE {jmeno}")
+                raise
+            self.conn.execute(f"RELEASE {jmeno}")
+
+    def _sloupce(self, tabulka: str) -> set[str]:
+        """Sloupce tabulky (PRAGMA table_info, cache – schéma se za běhu nemění)."""
+        s = self._sloupce_cache.get(tabulka)
+        if s is None:
+            with self.lock:
+                s = {r[1] for r in self.conn.execute(f"PRAGMA table_info({tabulka})")}
+            self._sloupce_cache[tabulka] = s
+        return s
+
+    def _jen_zname(self, tabulka: str, r: dict) -> dict:
+        """Záznam z druhé lokality jen se sloupci, které má tahle DB. Novější verze může mít sloupec navíc
+        a INSERT by na něm spadl – záznam by se ztratil celý (SYNC-3). Proto pravidlo pro 0.19.x: nové
+        sloupce jen v sessions; hodnoty sloupce, který tu chybí, se zahodí. Každý zahozený klíč se
+        zaloguje jednou za běh procesu."""
+        znam = self._sloupce(tabulka)
+        navic = set(r) - znam
+        if navic:
+            nove = navic - self._zahozene.setdefault(tabulka, set())
+            if nove:
+                self._zahozene[tabulka] |= nove
+                LOG.warning("import: tabulka %s nezná sloupce %s – jejich hodnoty se zahodí (druhá lokalita "
+                            "má novější verzi?)", tabulka, ", ".join(sorted(nove)))
+        return {k: v for k, v in r.items() if k in znam}
 
     # --- meta -----------------------------------------------------------------
     def get_meta(self, key, default=None):
@@ -179,10 +239,63 @@ class Database:
         with self.lock:
             self.conn.execute(f"UPDATE sessions SET {', '.join(c+'=?' for c in cols)} WHERE id=?", vals + [sid])
 
+    def oznac_synced(self, sid: str, updated_ts, origin: str) -> bool:
+        """Session je vyexportovaná: synced_ts = updated_ts, bez posunu updated_ts (update_session by ho
+        posunul a na hraně sekundy by session zůstala kandidátem exportu). Jen když se updated_ts od
+        přečtení exportem nezměnil – zápis resolve mezi SELECTem a tímhle by se jinak nevyexportoval
+        nikdy. Vrátí False, když se session mezitím změnila (zůstává kandidátem)."""
+        with self.lock:
+            cur = self.conn.execute("UPDATE sessions SET synced_ts=COALESCE(updated_ts, ?), origin=? "
+                                    "WHERE id=? AND updated_ts IS ?", (int(time.time()), origin, sid, updated_ts))
+        return bool(cur.rowcount)
+
+    def import_session(self, s: dict, fils: list[dict], pauses: list[dict]):
+        """Jeden záznam ze sync repa (session + filamenty + pauzy) celý, nebo vůbec (M8c).
+
+        Dřív se session přepsala a filamenty pak spadly na neznámém sloupci: session a filamenty se
+        rozjely a po upgradu už se to samo nesrovnalo, protože updated_ts seděl (SYNC-3). Klíče se
+        filtrují podle sloupců této DB, při chybě se vrátí všechno a výjimka jde dál (importér ji
+        započítá a pokračuje dalším záznamem)."""
+        s = self._jen_zname("sessions", s)
+        fils = [self._jen_zname("session_filaments", {k: v for k, v in f.items() if k not in ("id", "session_id")})
+                for f in fils or []]
+        pauses = [self._jen_zname("session_pauses", {k: v for k, v in p.items() if k not in ("id", "session_id")})
+                  for p in pauses or []]
+        with self._savepoint("imp"):
+            self.upsert_session(s)
+            self._replace_filaments_nolock(s["id"], fils)
+            self._replace_pauses_nolock(s["id"], pauses)
+
     def last_closed_session(self, serial) -> dict | None:
         with self.lock:
             r = self.conn.execute("SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL ORDER BY ended_ts DESC LIMIT 1",
                                   (serial,)).fetchone()
+        return dict(r) if r else None
+
+    def posledni_tisk(self, serial) -> dict | None:
+        """Poslední uzavřená session, která je tiskem (ne util.VOID_SQL), bez ohledu na lokalitu.
+        Na ni míří příkazy z HA bez ID (mark_*, refetch_3mf) – táž, kterou ukazuje last_print."""
+        with self.lock:
+            r = self.conn.execute(f"""SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL
+                                      AND NOT {VOID_SQL} ORDER BY ended_ts DESC LIMIT 1""", (serial,)).fetchone()
+        return dict(r) if r else None
+
+    def predchozi_session(self, s: dict) -> dict | None:
+        """Tisk, který session předcházel: nejbližší dřívější uzavřená session téže tiskárny (bez ohledu
+        na lokalitu – tiskárna cestuje), která skončila nejpozději pár sekund po jejím začátku.
+
+        Přeskočí session samu (v _finalize už je uzavřená), přípravnou session téže úlohy nahrazenou
+        skutečnou (stejný otisk nebo task_id, stejné jméno by vydávala za reprint) a session, které
+        nejsou tiskem (util.VOID_SQL: kalibrace, prázdná přípravná superseded).
+        """
+        task = str(s.get("task_id") or "")
+        with self.lock:
+            r = self.conn.execute(
+                f"""SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL AND ended_ts<=?
+                    AND id<>? AND fingerprint<>? AND (? IN ('', '0') OR COALESCE(task_id, '')<>?)
+                    AND NOT {VOID_SQL} ORDER BY ended_ts DESC LIMIT 1""",
+                (s.get("printer_serial"), int(s.get("started_ts") or 0) + 5, s.get("id") or "",
+                 s.get("fingerprint") or "", task, task)).fetchone()
         return dict(r) if r else None
 
     def recent_sessions(self, serial, limit=25) -> list[dict]:
@@ -204,11 +317,15 @@ class Database:
 
     def replace_pauses(self, sid, rows: list[dict]):
         with self.lock:
-            self.conn.execute("DELETE FROM session_pauses WHERE session_id=?", (sid,))
-            for r in rows:
-                r = {**r, "session_id": sid}
-                cols = list(r.keys())
-                self.conn.execute(f"INSERT INTO session_pauses({','.join(cols)}) VALUES({','.join('?'*len(cols))})", [r[c] for c in cols])
+            self._replace_pauses_nolock(sid, rows)
+
+    def _replace_pauses_nolock(self, sid, rows: list[dict]):
+        """Jen pod db.lock (volá replace_pauses a import_session)."""
+        self.conn.execute("DELETE FROM session_pauses WHERE session_id=?", (sid,))
+        for r in rows:
+            r = {**r, "session_id": sid}
+            cols = list(r.keys())
+            self.conn.execute(f"INSERT INTO session_pauses({','.join(cols)}) VALUES({','.join('?'*len(cols))})", [r[c] for c in cols])
 
     def pauses(self, sid) -> list[dict]:
         with self.lock:
@@ -216,23 +333,23 @@ class Database:
 
     # --- filaments --------------------------------------------------------------------
     def replace_filaments(self, sid, rows: list[dict]):
-        with self.lock:
-            self.conn.execute("BEGIN")
-            try:
-                self.conn.execute("DELETE FROM session_filaments WHERE session_id=?", (sid,))
-                for r in rows:
-                    r = {**r, "session_id": sid}
-                    cols = list(r.keys())
-                    self.conn.execute(f"INSERT INTO session_filaments({','.join(cols)}) VALUES({','.join('?'*len(cols))})",
-                                      [r[c] for c in cols])
-                self.conn.execute("COMMIT")
-            except Exception:
-                self.conn.execute("ROLLBACK")
-                raise
+        # SAVEPOINT, ne BEGIN: jde vnořit do importu záznamu ze syncu (import_session)
+        with self._savepoint("fil"):
+            self._replace_filaments_nolock(sid, rows)
+
+    def _replace_filaments_nolock(self, sid, rows: list[dict]):
+        """Jen pod db.lock uvnitř transakce (replace_filaments, import_session)."""
+        self.conn.execute("DELETE FROM session_filaments WHERE session_id=?", (sid,))
+        for r in rows:
+            r = {**r, "session_id": sid}
+            cols = list(r.keys())
+            self.conn.execute(f"INSERT INTO session_filaments({','.join(cols)}) VALUES({','.join('?'*len(cols))})",
+                              [r[c] for c in cols])
 
     def filaments(self, sid) -> list[dict]:
         with self.lock:
-            return [dict(r) for r in self.conn.execute("SELECT * FROM session_filaments WHERE session_id=?", (sid,))]
+            return [dict(r) for r in self.conn.execute("SELECT * FROM session_filaments WHERE session_id=? ORDER BY id",
+                                                       (sid,))]
 
     # --- samples ------------------------------------------------------------------------
     def add_sample(self, row: dict):
@@ -248,12 +365,17 @@ class Database:
 
     # --- hms -----------------------------------------------------------------------------
     def upsert_hms(self, serial, sid, code, attr, code_raw, module, severity, ts) -> bool:
-        """Vrátí True, když jde o novou (nebo znovu aktivní) událost."""
+        """Vrátí True, když jde o novou (nebo znovu aktivní) událost.
+
+        Poslední výskyt a čítač aktivní události se zapisují nejvýš jednou za minutu (čas zprávy):
+        tiskárna ji hlásí v každé zprávě, tedy zápis do DB každou sekundu (HAC-4). COALESCE kvůli řádkům
+        importovaným bez last_ts – NULL by throttle zablokoval navždy."""
         with self.lock:
             r = self.conn.execute("SELECT id, last_ts FROM hms_events WHERE printer_serial=? AND attr=? AND code_raw=? AND cleared_ts IS NULL",
                                   (serial, attr, code_raw)).fetchone()
             if r:
-                self.conn.execute("UPDATE hms_events SET last_ts=?, count=count+1 WHERE id=?", (int(ts), r["id"]))
+                self.conn.execute("UPDATE hms_events SET last_ts=?, count=count+1 WHERE id=? AND ? - COALESCE(last_ts, 0) >= 60",
+                                  (int(ts), r["id"], int(ts)))
                 return False
             self.conn.execute("""INSERT OR IGNORE INTO hms_events(printer_serial,session_id,code,attr,code_raw,module,severity,first_ts,last_ts)
                                  VALUES(?,?,?,?,?,?,?,?,?)""", (serial, sid, code, attr, code_raw, module, severity, int(ts), int(ts)))
@@ -294,31 +416,60 @@ class Database:
         cols = ["id", "printer_serial", "subtask_name", "result", "result_confidence", "started", "ended", "duration_min",
                 "active_min", "paused_min", "pause_count", "layers", "filament_g", "filament_m", "filament_source",
                 "filament_is_estimate", "materials", "print_type", "start_source", "end_source", "print_error", "fail_reason"]
-        tmp = path.with_suffix(".tmp")
-        with tmp.open("w", newline="") as fh:
-            w = csv.writer(fh)
-            w.writerow(cols)
-            for r in rows:
-                mats = self.query("SELECT material, used_g FROM session_filaments WHERE session_id=?", (r["id"],))
-                w.writerow([r["id"], r["printer_serial"], r["subtask_name"], r["result"], r["result_confidence"],
-                            time.strftime("%Y-%m-%d %H:%M", time.localtime(r["started_ts"] or 0)),
-                            time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ended_ts"] or 0)),
-                            round((r["duration_s"] or 0) / 60), round((r["active_print_s"] or 0) / 60), round((r["paused_s"] or 0) / 60),
-                            r["pause_count"], f"{r['last_layer']}/{r['total_layers']}", r["filament_g"], r["filament_m"],
-                            r["filament_source"], r["filament_is_estimate"],
-                            "; ".join(f"{m['material']} {m['used_g']} g" for m in mats), r["print_type"], r["start_source"],
-                            r["end_source"], r["print_error"], r["fail_reason"]])
-        tmp.replace(path)
+        # Unikátní dočasný soubor v cílovém adresáři + os.replace (M8e): export běží z _finalize, po importu
+        # ze syncu i z denní údržby a se společným history_<slug>.tmp by se souběžné zápisy smíchaly,
+        # nebo by replace spadl na souboru, který mezitím přejmenovalo jiné vlákno.
+        with tempfile.NamedTemporaryFile("w", newline="", dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp",
+                                         delete=False) as fh:
+            tmp = Path(fh.name)
+            try:
+                w = csv.writer(fh)
+                w.writerow(cols)
+                for r in rows:
+                    mats = self.query("SELECT material, used_g FROM session_filaments WHERE session_id=?", (r["id"],))
+                    w.writerow([r["id"], r["printer_serial"], r["subtask_name"], r["result"], r["result_confidence"],
+                                time.strftime("%Y-%m-%d %H:%M", time.localtime(r["started_ts"] or 0)),
+                                time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ended_ts"] or 0)),
+                                round((r["duration_s"] or 0) / 60), round((r["active_print_s"] or 0) / 60), round((r["paused_s"] or 0) / 60),
+                                r["pause_count"], f"{r['last_layer']}/{r['total_layers']}", r["filament_g"], r["filament_m"],
+                                r["filament_source"], r["filament_is_estimate"],
+                                "; ".join(f"{m['material']} {m['used_g']} g" for m in mats), r["print_type"], r["start_source"],
+                                r["end_source"], r["print_error"], r["fail_reason"]])
+            except BaseException:
+                fh.close()
+                tmp.unlink(missing_ok=True)
+                raise
+        try:
+            # NamedTemporaryFile zakládá soubor s právy 0600 – CSV má mít práva jako dřív (podle umask),
+            # čte se přes Sambu/SSH
+            os.chmod(tmp, 0o666 & ~_UMASK)
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         return len(rows)
 
     # --- osazení slotů (lokální deník, funguje i bez Spoolmanu) ------------------------------
-    def set_slot_spool(self, serial, tray_global, spool_id, label=None, note=None, from_ts=None):
+    def set_slot_spool(self, serial, tray_global, spool_id, label=None, note=None, from_ts=None) -> int | None:
+        """Zapíše, co je od from_ts ve slotu, a uzavře předchozí otevřené záznamy. Vrátí id nového záznamu,
+        nebo None, když záznam se stejným časem už existuje.
+
+        Jedna transakce a kontrola stejného času PŘED uzavřením (FIL-10): oprava překlepu stejným
+        příkazem se stejným časem dřív nejdřív uzavřela původní záznam na nulový interval [T, T)
+        a pak spadla na unikátním klíči – slot pak v deníku neměl žádnou cívku a upsert deníku
+        (sluc_slot_spools) by tu díru přenesl i do druhé lokality."""
         now = int(from_ts or time.time())
-        with self.lock:
-            self.conn.execute("UPDATE slot_spools SET to_ts=? WHERE printer_serial=? AND tray_global=? AND to_ts IS NULL AND from_ts<=?",
+        with self._savepoint("slot"):
+            if self.conn.execute("SELECT 1 FROM slot_spools WHERE printer_serial=? AND tray_global=? AND from_ts=?",
+                                 (serial, tray_global, now)).fetchone():
+                LOG.warning("slot %d: záznam s tímto časem už existuje, použij jiný čas (%s)", tray_global % 4 + 1,
+                            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)))
+                return None
+            self.conn.execute("UPDATE slot_spools SET to_ts=? WHERE printer_serial=? AND tray_global=? AND to_ts IS NULL AND from_ts<?",
                               (now, serial, tray_global, now))
-            self.conn.execute("""INSERT INTO slot_spools(printer_serial,tray_global,spool_id,label,note,from_ts,created_ts)
-                                 VALUES(?,?,?,?,?,?,?)""", (serial, tray_global, spool_id, label, note, now, int(time.time())))
+            cur = self.conn.execute("""INSERT INTO slot_spools(printer_serial,tray_global,spool_id,label,note,from_ts,created_ts)
+                                       VALUES(?,?,?,?,?,?,?)""", (serial, tray_global, spool_id, label, note, now, int(time.time())))
+            return cur.lastrowid
 
     def slot_spool_at(self, serial, tray_global, ts) -> dict | None:
         """Která cívka byla v daném slotu v daný čas (podle lokálního deníku)."""
@@ -391,20 +542,34 @@ class Database:
 
     def sluc_slot_spools(self, rows: list[dict]) -> int:
         """Přijme cizí záznamy deníku slotů. Klíč je (tiskárna, slot, od kdy) — stejná výměna
-        zapsaná na obou místech se tím pádem neztrojí."""
+        zapsaná na obou místech se tím pádem neztrojí.
+
+        Existující záznam převezme z cizí kopie jen to, co tady chybí (M9c): ukončení (to_ts) a propsání
+        do Spoolmanu (pushed_ts), obojí jen NULL → hodnota. Lokální to_ts ani pushed_ts se nikdy
+        nepřepisují a nulový nebo záporný interval (to_ts ≤ from_ts) se nepřevezme. Dřív se přes
+        INSERT OR IGNORE nepřenášelo nic, takže druhá lokalita měla ve slotu tři „otevřené“ cívky
+        a propisovala záznamy, které autor už dávno propsal (SYNC-2)."""
         zmeny = 0
         with self.lock:
             for r in rows or []:
-                d = {k: v for k, v in r.items() if k != "id"}
+                d = self._jen_zname("slot_spools", {k: v for k, v in r.items() if k != "id"})
                 if not d.get("printer_serial") or d.get("tray_global") is None or not d.get("from_ts"):
                     continue
                 cols = list(d)
                 try:
                     cur = self.conn.execute(
-                        f"INSERT OR IGNORE INTO slot_spools({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                        f"""INSERT INTO slot_spools({','.join(cols)}) VALUES({','.join('?' * len(cols))})
+                            ON CONFLICT(printer_serial, tray_global, from_ts) DO UPDATE SET
+                              to_ts=COALESCE(slot_spools.to_ts,
+                                             CASE WHEN excluded.to_ts > slot_spools.from_ts THEN excluded.to_ts END),
+                              pushed_ts=COALESCE(slot_spools.pushed_ts, excluded.pushed_ts)
+                            WHERE (slot_spools.to_ts IS NULL AND excluded.to_ts > slot_spools.from_ts)
+                               OR (slot_spools.pushed_ts IS NULL AND excluded.pushed_ts IS NOT NULL)""",
                         [d[c] for c in cols])
                     zmeny += cur.rowcount or 0
-                except sqlite3.Error:
+                except sqlite3.Error as e:
+                    LOG.warning("import deníku slotů: záznam slot %s od %s přeskočen: %s",
+                                d.get("tray_global"), d.get("from_ts"), e)
                     continue
         return zmeny
 
@@ -416,14 +581,17 @@ class Database:
         zmeny = 0
         with self.lock:
             for r in rows or []:
-                d = {k: v for k, v in r.items() if k != "id"}
+                d = self._jen_zname("hms_events", {k: v for k, v in r.items() if k != "id"})
                 cols = list(d)
+                if not cols:
+                    continue
                 try:
                     cur = self.conn.execute(
                         f"INSERT OR IGNORE INTO hms_events({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
                         [d[c] for c in cols])
                     zmeny += cur.rowcount or 0
-                except sqlite3.Error:
+                except sqlite3.Error as e:
+                    LOG.warning("import HMS: záznam %s od %s přeskočen: %s", d.get("code"), d.get("first_ts"), e)
                     continue
         return zmeny
 

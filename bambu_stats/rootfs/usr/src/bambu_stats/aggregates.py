@@ -2,14 +2,17 @@
 
 Vše se počítá z uzavřených session (ended_ts NOT NULL). Session s result='unknown'
 (ztracené při výpadku) se do success rate nepočítají, ale do času tisku ano.
+Session, které nejsou tiskem (util.je_void: kalibrace, prázdná přípravná nahrazená skutečnou),
+se do přehledů nepočítají vůbec (M10a) – ledger odečtů ve Spoolmanu je ale dál vede.
 """
 from __future__ import annotations
 
 import datetime as dt
 import statistics
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .util import MATERIAL_GROUPS
+from .util import MATERIAL_GROUPS, VOID_SQL, je_void
 
 HISTORY_N = 25
 
@@ -30,17 +33,29 @@ def price_of(prices: dict | None, material_group: str | None) -> float:
     return float(prices.get(g) or prices.get("OTHER") or 0.0)
 
 
+def _zacatek_48h(now_i: int) -> int:
+    """Začátek 48hodinového okna hodinových řad zarovnaný na celou hodinu – poslední koš je aktuální
+    hodina (M10d). Dřív okno začínalo přesně 48 h před výpočtem a koše měly hranice v minutách okamžiku
+    výpočtu, jenže popisek (start) se zaokrouhlil dolů na celou hodinu: tisk 23:00–23:40 spočítaný ve
+    23:48 se v grafu ukázal pod 22:00. Posun Prahy proti UTC je v celých hodinách, takže unixový čas
+    zarovnaný na hodinu je celá hodina i v místním čase, i přes změnu času."""
+    return (now_i // 3600 - 47) * 3600
+
+
 def maintenance(db, serial: str, now: float, open_session: dict | None, every_hours: int, desiccant_days: int) -> dict:
     """Hodiny/tisky od poslední údržby (meta maintenance_done_ts) a dny od výměny silikagelu (meta desiccant_changed_ts)."""
     now_i = int(now)
     m_ts = int(db.get_meta(f"maintenance_done_ts_{serial}", 0) or 0)
     d_ts = int(db.get_meta(f"desiccant_changed_ts_{serial}", 0) or 0)
-    rows = db.query("SELECT duration_s FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL AND ended_ts>?", (serial, m_ts))
+    # Hodiny jsou strojový čas – i kalibrace stroj opotřebí, takže ze všech session. Počet tisků bez void
+    # (M10a), stejně jako total_prints a historie.
+    rows = db.query(f"SELECT duration_s, {VOID_SQL} AS void FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL "
+                    "AND ended_ts>?", (serial, m_ts))
     hours = sum(r["duration_s"] or 0 for r in rows) / 3600
     if open_session and open_session.get("started_ts"):
         hours += max(0, now_i - max(open_session["started_ts"], m_ts)) / 3600
     days = (now_i - d_ts) / 86400 if d_ts else None
-    return {"hours_since_maintenance": round(hours, 1), "prints_since_maintenance": len(rows),
+    return {"hours_since_maintenance": round(hours, 1), "prints_since_maintenance": sum(1 for r in rows if not r["void"]),
             "hours_since_maintenance_attrs": {"last_maintenance": _iso(m_ts, ZoneInfo("Europe/Prague")) if m_ts else None,
                                               "every_hours": every_hours, "due": hours >= every_hours,
                                               "remaining_hours": round(max(0, every_hours - hours), 1)},
@@ -56,7 +71,7 @@ def humidity_series(db, serial: str, now: float, tz, changes: list[int] | None =
     (recorder drží jen ~10 dní). `changes` = časy výměn silikagelu, na grafu se zobrazí jako body.
     """
     now_i = int(now)
-    h0 = now_i - 48 * 3600
+    h0 = _zacatek_48h(now_i)
     rows = db.query("SELECT ts, ams_humidity FROM samples WHERE printer_serial=? AND ts>=? AND ams_humidity IS NOT NULL ORDER BY ts",
                     (serial, now_i - 90 * 86400))
     hourly = [[0, 0.0] for _ in range(48)]          # [počet, součet]
@@ -88,13 +103,30 @@ def humidity_series(db, serial: str, now: float, tz, changes: list[int] | None =
 
 
 def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None = None, prices: dict | None = None,
-            baseline: dict | None = None) -> dict:
+            baseline: dict | None = None, covers_dir: Path | None = None) -> dict:
     """`baseline` = spotřeba/útrata ze cívek, kterou nezaznamenaly tiskové session (dřívější tisky) –
-    {material_group: {"g": …, "cost": …, "spools": [...]}} ze `Collector.spoolman_baseline()`."""
+    {material_group: {"g": …, "cost": …, "spools": [...]}} ze `Collector.spoolman_baseline()`.
+
+    `covers_dir` = adresář s uloženými náhledy. Když je zadaný, náhled (img v historii a modelech, cover
+    u posledního tisku) se uvede jen u existujícího souboru (M10d): session z druhé lokality nesou URL
+    náhledu, který tady nikdy uložený nebyl, a nástěnka pak ukazovala rozbité obrázky. Bez něj beze změny.
+    Void session (util.je_void) se vynechávají ze všeho (M10a)."""
     now_i = int(now)
-    sessions = db.query("SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL ORDER BY ended_ts", (serial,))
-    fil_rows = db.query("""SELECT f.*, s.ended_ts FROM session_filaments f JOIN sessions s ON s.id=f.session_id
-                           WHERE s.printer_serial=? AND s.ended_ts IS NOT NULL""", (serial,))
+    sessions = [s for s in db.query("SELECT * FROM sessions WHERE printer_serial=? AND ended_ts IS NOT NULL ORDER BY ended_ts",
+                                    (serial,)) if not je_void(s)]
+    tisky = {s["id"] for s in sessions}
+    fil_rows = [r for r in db.query("""SELECT f.*, s.ended_ts FROM session_filaments f JOIN sessions s ON s.id=f.session_id
+                                       WHERE s.printer_serial=? AND s.ended_ts IS NOT NULL""", (serial,))
+                if r["session_id"] in tisky]
+    existuje: dict[str, bool] = {}
+
+    def nahled(url: str | None) -> str | None:
+        """URL náhledu, když se má zobrazit (bez covers_dir vždy, jinak jen s uloženým souborem)."""
+        if not url or covers_dir is None:
+            return url
+        if url not in existuje:
+            existuje[url] = (Path(covers_dir) / Path(url).name).is_file()
+        return url if existuje[url] else None
     for r in fil_rows:
         per_kg = r.get("spool_price_per_kg") or price_of(prices, r["material_group"])
         r["cost"] = round((r["used_g"] or 0) / 1000 * per_kg, 2)
@@ -210,13 +242,14 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
     out["last_print_attrs"] = _session_attrs(db, last, tz) if last else {}
     if last:
         out["last_print_attrs"]["cost"] = round(cost_by_session.get(last["id"], 0), 1)
+        out["last_print_attrs"]["cover"] = nahled(last.get("cover"))
     hist = []
     for s in reversed(sessions[-HISTORY_N:]):
         hist.append({"id": s["id"][-8:], "n": (s["subtask_name"] or "?")[:40], "s": _iso(s["started_ts"], tz),
                      "e": _iso(s["ended_ts"], tz), "d": round((s["duration_s"] or 0) / 60), "r": s["result"],
                      "g": round(s["filament_g"], 1) if s["filament_g"] is not None else None,
                      "m": _materials(db, s["id"]), "src": s["filament_source"], "est": s["filament_is_estimate"],
-                     "c": round(cost_by_session.get(s["id"], 0)), "o": s.get("origin"), "img": s.get("cover"),
+                     "c": round(cost_by_session.get(s["id"], 0)), "o": s.get("origin"), "img": nahled(s.get("cover")),
                      "q": s.get("quality"), "qn": s.get("quality_note")})
     out["print_history"] = len(sessions)
     out["print_history_attrs"] = {"history": hist}
@@ -228,7 +261,7 @@ def compute(db, serial: str, now: float, tz: ZoneInfo, open_session: dict | None
         m = by_model.setdefault(n, {"name": n[:40], "n": 0, "ok": 0, "min": 0.0, "g": 0.0, "c": 0.0, "last": 0, "img": None})
         m["n"] += 1; m["ok"] += int(s["result"] == "success" and s.get("quality") != "defect"); m["min"] += (s["duration_s"] or 0) / 60
         m["g"] += s["filament_g"] or 0; m["c"] += cost_by_session.get(s["id"], 0); m["last"] = max(m["last"], s["ended_ts"] or 0)
-        if s.get("cover"):
+        if nahled(s.get("cover")):             # nejnovější existující náhled (sessions jsou podle konce)
             m["img"] = s["cover"]
     models = sorted(by_model.values(), key=lambda m: (-m["n"], -m["last"]))[:15]
     for m in models:
@@ -347,8 +380,8 @@ def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz, db=None, se
             monthly[mk][5] += c
 
     hourly = []
+    h0 = _zacatek_48h(now_i)
     if db is not None and serial:
-        h0 = now_i - 48 * 3600
         samples = db.query("SELECT ts, gcode_state FROM samples WHERE printer_serial=? AND ts>=? ORDER BY ts", (serial, h0))
         buckets = [[0.0, 0.0] for _ in range(48)]
         prev = None
@@ -364,7 +397,7 @@ def _series(known: list[dict], fil_rows: list[dict], now_i: int, tz, db=None, se
     def rnd(rows):
         return [[r[0], round(r[1], 2), round(r[2], 1), r[3], r[4], round(r[5])] for r in rows]
     return {
-        "hourly": {"start": _local(now_i - 48 * 3600, tz).strftime("%Y-%m-%dT%H:00"), "rows": hourly},
+        "hourly": {"start": _local(h0, tz).strftime("%Y-%m-%dT%H:00"), "rows": hourly},
         "daily": {"start": daily_start.strftime("%Y-%m-%d"), "rows": rnd(daily)},
         "weekly": {"start": week_start.strftime("%Y-%m-%d"), "rows": rnd(weekly)},
         "monthly": {"keys": months, "rows": rnd(list(monthly.values()))},

@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.19.0 - 2026-09-30
+
+Opravy podle auditu integrace z 30. 9. 2026. Schéma DB 8 (aditivně `sessions.manual_plan_g/_m`, v logu
+`DB schema 7 → 8`), kód 0.18.2 databázi se schématem 8 snese a sync si obě verze navzájem naimportují.
+Nástěnku (homeassistant/dashboards/bambu_stats.py) nasadit znovu až po aktualizaci add-onu na obou lokalitách.
+
+- **Pravidlo pro celou řadu 0.19.x: nové sloupce DB jen v `sessions`.** Lokality se nepovyšují naráz a rollback
+  vrací kód 0.18.2. Ten session ze syncu bere jen se sloupci, které zná, ale filamenty, pauzy, deník slotů a HMS
+  vkládá bez filtru – na neznámém sloupci by import session spadl, řádek deníku nebo HMS by se tiše zahodil.
+  Hlídá to test se zmrazeným schématem 7.
+- **Po opravách přes `set_plan` se na kód starší než 0.19 nevracet** (ani na připravený rollback 0.19.1, který
+  nese kód 0.18.2). Starý kód ruční plán nezná: `resolve:`, `set_plan:` nebo `assign_slot:` nad opravenou
+  session by ji přepočítal z 3MF v cache a odečet ze Spoolmanu zopakoval (u tří „Cube“ 119 g z #21).
+- **Žádná falešná „superseded“.** Přípravná session už nepřebírá procenta a vrstvu minulého tisku a nahrazení
+  jinou session nerozhoduje skok zbývajícího času (10 z 10 případů v historii byl jeden tisk rozdělený na dvě
+  session, latentně 140 % odečet při přepnutí rychlosti). V přípravě je postup 0 %, takže tisk zrušený ještě
+  v přípravě nic nespotřeboval (dřív ho zastaralých 100 % z minulého tisku hodnotilo jako celý). Pauza ještě
+  v přípravě vyšle při RUNNING `started`. Přijaté daně (obojí se opraví přes `set_plan`): výpadek spojení od
+  PREPARE do FAILED bez zachyceného RUNNING dá 0 g; zmeškaný přechod na další tisk, který jde poznat jen podle
+  poklesu vrstvy, se při postupu pod 5 % sloučí do jedné session (v datech se nevyskytl).
+- **Kalibrace a jiné systémové úlohy** (`print_type system` + gcode z `/usr/etc/print/`) se neevidují –
+  dřív vzaly cloud hmotnost předchozího tisku (fantomových 145,5 g na obou lokalitách). Během kalibrace je
+  `current_session` idle. Spotřeba nedokončeného tisku z vrstev jen po minutě tisku.
+- **3MF jen podle přesného jména a tištěné desky.** Dřív stačila shoda předpony a chybějící deska spadla na
+  první desku projektu (3× „Cube“ o 119 g víc z #21). Deska, kterou žádný kandidát nemá, je konečný stav
+  `mismatch`. U cloud tisku se 3MF kontroluje proti čerstvé cloud hmotnosti.
+- **Zastaralá cloud hmotnost se odmítá** (starší než start tisku, nebo přesně hmotnost předchozího tisku mimo
+  reprint); u LAN tisku a kalibrace se živá cloud hodnota nepoužije vůbec. Živou entitu čte jen průběžný
+  výpočet na instanci, která tiskárnu sbírá (s čerstvou zprávou), a konec tisku do 15 min. Uzavřená session,
+  pro kterou teď není žádný zdroj spotřeby, zůstane beze změny (dřív se cívce vrátil celý odečet).
+- **Příkazy z HA jen nad vlastní session.** `resolve:`, `set_plan:`, `assign_slot:`, `mark_*`, `refetch_3mf`
+  a `settled:` nad tiskem druhé lokality se odmítnou; výsledek každého příkazu je v atributu `last_command`
+  u `collector_status`. `refetch_3mf` jen na instanci, která tiskárnu sbírá, `assign_slot` pod zámkem.
+  Dřív by tlačítko Načíst 3MF na Pod Harfou přepočítalo poslední tisk Haciendy živou cloud hmotností tisku,
+  který zrovna běžel (95,8 místo 12,9 g), a z cívky #23 odečetlo 82,9 g navíc; Zmetek a V pořádku na cizím
+  tisku by zůstaly jen lokálně a další sync by je přepsal.
+- **Ruční plán a ruční uzavření:** `set_plan:<id>:<gramy>[:<metry>][:bez_spoolmanu]` (`-` zruší) je plán celé
+  úlohy (u nedokončeného tisku se násobí postupem), má přednost před 3MF i cloudem a Spoolman se dorovná jen
+  o rozdíl – dřív ho u tisku s 3MF přepsala hmotnost z 3MF, přestože příkaz hlásil úspěch. `settled:<id>`
+  spotřebu hotového tisku zmrazí – určeno pro tisk ze 17. 9., který kvůli slotu bez ID cívky visí ve frontě
+  doúčtování a každých 10 min vyvolával commit do sync repa.
+- **Vratky do Spoolmanu přes `PUT /use`** se záporným množstvím – dřívější zápis `remaining_weight` u přečerpané
+  cívky (odečteno víc než počáteční hmotnost) tento přebytek zahodil (25. 9. by tak u #21 zmizelo 175 g odečtů,
+  ruční oprava o 19 s později to srovnala). Smazaná cívka (404) se bere jako vyřízená a ukáže se v `chyby`.
+  Nevydařená vratka ani výpadek Spoolmanu už z deníku odečtů nic neztratí. Každý zápis do Spoolmanu je v logu
+  (`Spoolman: …`).
+- **Umístění a zdraví:** sonda se přeskočí, když tiskárna posílá zprávy; sběr se vypne až po 3 kolech bez
+  odpovědi a s otevřenou session jen při převozu (30 min ticha a tiskárna na jiné adrese přes VPN). Dřív
+  zdravé spojení shodila jediná neúspěšná 2s sonda (od 24. 9. sedm falešných „odjezdů“, jednou useknutý začátek
+  tisku). Session otevřená během sondy by navíc hledání tiskárny zablokovala natrvalo a po restartu watchdogem
+  uprostřed tisku by instance tiše přestala sbírat. Mrtvé spojení se obnoví samo. `/health` hlídá jen plánovač
+  (restart uprostřed tisku kvůli MQTT už ne, v režimu jen synchronizace ani kvůli výpadku GitHubu), provozní
+  stav ukazuje `collector_status` se stejnými atributy v obou režimech (`mode`, `open_session`,
+  `printer_mqtt_connected`, `last_report_age_s`, `schema_version`, `build`, …). Stav je `degraded`, když
+  sbírající instance nemá od tiskárny zprávu déle než 5 min, instanci jen se synchronizací hodinu nejde sync,
+  nebo stojí plánovač – na to čeká dohled „collector tiskárny neběží“. `build` je hash zdrojového commitu ze
+  souboru `BUILD`, který zapisuje až publikace a nasazení (v gitu není). Sync běží ve vlastním vlákně.
+- **Sync bez churnu:** export jen při věcné změně (dřív ~150 commitů denně), stav bez počítadel aktivních HMS,
+  import po záznamech (chybný záznam neshodí ostatní), git se zotaví z přerušeného rebase, token se nedostane do
+  chybových hlášek. CSV záloha se obnoví i po importu z druhé lokality.
+- **Deník slotů:** do Spoolmanu se propisuje jen aktuální záznam (23. 9. odečet z vyřazené #10) a předchozí
+  držitel slotu se uvolní; z plánovače jen instance, která tiskárnu sbírá, a s čerstvým syncem. `set_slot`
+  se stejným časem se odmítne (dřív slot v deníku zůstal bez cívky). Uzavřený tisk si při přepočtu (příkazy,
+  fronta doúčtování) nechá cívku, ze které se odečítal, když deník pro dobu tisku nic nemá – dnešní přiřazení
+  slotu ve Spoolmanu ho nepřestěhuje (offline brána: `resolve:` tisku z 13. 9. by přesunul 6 g z #18 na #23).
+- **Kalibrace a prázdné přípravné session nejsou tisky ani ve statistikách.** Session systémové úlohy
+  a přípravná session nahrazená skutečnou do 20 min bez postupu se nepočítají do tisků, historie, hodin,
+  modelů, grafů, posledního tisku ani spotřeby; tlačítka bez ID míří na tisk z karty Poslední tisk. Hodiny od
+  údržby jsou dál strojový čas, odečty ve Spoolmanu a sync se nemění. **Jednorázový pokles** (data
+  z 29. 9.): tisků 123 → 121, historie 133 → 121, hodin 334,74 → 334,13, evidovaný filament 11,90 → 11,73 kg,
+  „ostatní“ 0,146 → 0 kg; klesnou i `total_filament_kg` a `total_cost` (dlouhodobé statistiky HA zapíšou
+  zápornou změnu).
+- **Filament mimo evidenci po materiálech.** Po cívkách se bere nejvýš počáteční hmotnost (přečerpání není
+  spotřeba) mínus odečty uzavřených tisků, sčítá se podle materiálu cívky a odečte se spotřeba tisků bez
+  přiřazené cívky; cena podle průměrné ceny cívek materiálu. Hodnota **klesne zhruba z 3,3 na 2,1 kg**. Průběžné
+  odečty běžícího tisku jsou do jeho konce na obou lokalitách „mimo evidenci“ (obě lokality ukazují totéž).
+- **Lokalita, kde tiskárna nestojí:** sloty AMS se obnovují ze Spoolmanu každou minutu (dřív cívky z 23. 9.)
+  a při nedostupném Spoolmanu zůstanou poslední hodnoty; bez otevřené session je `current_session` idle
+  s atributy `mode` a `umisteni`, kontrola filamentu `unknown` s důvodem, filament a náklady běžícího tisku,
+  vlhkost AMS a opotřebení trysky `unknown`. Neshoda slotu se nepočítá ze snímku tiskárny staršího než 10 min.
+- **Nástěnka:** náhledy jen ty, které na lokalitě opravdu leží; u tisků ve frontě doúčtování důvod
+  (např. slot s cívkou bez ID ve Spoolmanu) a nový seznam dokončených tisků bez známé hmotnosti (čekají na
+  `set_plan`); hodinové grafy zarovnané na celé hodiny (tisk 23:00–23:40 byl pod 22:00); tlačítka Zmetek,
+  V pořádku a Načíst 3MF jen u tisku této lokality (atribut `vlastni` u posledního tisku, HA 2026.5+).
+
 ## 0.18.2 - 2026-09-29
 
 - **Slot, ze kterého se tiskne, se ukládá průběžně.** Průběžný zápis session (každých 10 s) nesl

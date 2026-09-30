@@ -17,6 +17,13 @@ from .health import HealthServer
 LOG = logging.getLogger("main")
 
 
+def stav(collectors: list[Collector]) -> dict:
+    """Odpověď /health: ok jen když žijí plánovače všech collectorů (heartbeat, M7b). Stav tiskárny
+    a syncu je v atributech collector_status – restart kvůli nim nepomůže."""
+    parts = [c.health() for c in collectors]
+    return {"ok": all(x.get("ok") for x in parts) if parts else False, "printers": parts}
+
+
 def main() -> int:
     settings = config.load()
     log.setup(settings.log_level)
@@ -46,11 +53,7 @@ def main() -> int:
         prefix = settings.entity_prefix if len(settings.printers) == 1 else f"{settings.entity_prefix}_{p.slug}"
         collectors.append(Collector(settings, p, db, tz, prefix))
 
-    def status():
-        parts = [c.health() for c in collectors]
-        return {"ok": all(x["ok"] for x in parts) if parts else False, "printers": parts}
-
-    HealthServer(settings.health_port, status).start()
+    HealthServer(settings.health_port, lambda: stav(collectors)).start()
     for c in collectors:
         c.start()
 

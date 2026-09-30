@@ -3,7 +3,11 @@
 Přiřazení cívky k AMS slotu vede SpoolmanSync (extra.active_tray = '"<printer>_AMS_<ams_sn>_tray_<n>"', n = slot 1–4).
 Bambu Stats po uzavření tisku pro každý filament tisku najde cívku podle slotu a zavolá `PUT /spool/{id}/use`
 s hmotností ze sliceru. Odečítá jen rozdíl proti už odečtenému (`spool_deducted_g`), takže opakovaný resolve
-nic nezdvojí. Cena tisku pak = gramy × cena konkrétní cívky (`spool.price / spool.initial_weight`).
+nic nezdvojí. Vratka jde stejnou cestou se záporným `use_weight`. Cena tisku pak = gramy × cena konkrétní
+cívky (`spool.price / spool.initial_weight`).
+
+Každé volání, které ve Spoolmanu něco mění (ne-GET), jde do logu (INFO „Spoolman: <metoda> <cesta> <tělo>“),
+aby šlo po nasazení doložit, co add-on do Spoolmanu zapsal.
 """
 from __future__ import annotations
 
@@ -14,6 +18,8 @@ import urllib.error
 import urllib.request
 
 LOG = logging.getLogger("spoolman")
+GONE = "gone"               # use(): cívka ve Spoolmanu není (404) – zápis nemá kam jít, zkoušet znovu nemá smysl
+VRATKA_FALLBACK_HTTP = (400, 405, 422)   # záporné use_weight neprošlo validací (jiná verze Spoolmanu)
 
 
 class Spoolman:
@@ -29,6 +35,14 @@ class Spoolman:
         return bool(self.base)
 
     def _req(self, path: str, method="GET", payload=None, timeout=10):
+        if method != "GET":
+            # každý zápis do Spoolmanu doložitelně v logu (ověření canary: „žádný ne-GET“)
+            LOG.info("Spoolman: %s %s %s", method, path, json.dumps(payload, ensure_ascii=False))
+        return self._http(path, method, payload, timeout)
+
+    def _http(self, path: str, method: str, payload, timeout):
+        """Samotné HTTP volání. Testy ho nahrazují Spoolmanem v paměti (tests/collector_harness.py),
+        takže všechno nad ním – `_req`, `use()`, párování cívek – běží v testu naostro."""
         req = urllib.request.Request(f"{self.base}{path}", data=json.dumps(payload).encode() if payload is not None else None,
                                      headers={"Content-Type": "application/json"}, method=method)
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -52,7 +66,8 @@ class Spoolman:
         if tray_global is None:
             return None
         slot = tray_global % 4 + 1 if tray_global < 254 else None
-        for s in self.spools():
+        spools = self.spools()          # jednou – při výpadku by každé další volání čekalo 10 s na timeout
+        for s in spools:
             extra = s.get("extra") or {}
             tag = (extra.get("tag") or "").strip('"').upper()
             if tag_uid and tag and tag == tag_uid.upper() and tag_uid.strip("0"):
@@ -60,7 +75,7 @@ class Spoolman:
         if slot is None:
             return None
         # více cívek může mít stejný slot (staré přiřazení nejde ve Spoolmanu smazat) → vzít tu naposledy použitou
-        found = [s for s in self.spools() if re.search(rf'_tray_{slot}"?$', (s.get("extra") or {}).get("active_tray") or "")]
+        found = [s for s in spools if re.search(rf'_tray_{slot}"?$', (s.get("extra") or {}).get("active_tray") or "")]
         if not found:
             return None
         found.sort(key=lambda s: (s.get("first_used") or "", s.get("last_used") or "", s.get("registered") or ""), reverse=True)
@@ -81,18 +96,38 @@ class Spoolman:
         weight = spool.get("initial_weight") or (spool.get("filament") or {}).get("weight") or 1000
         return round(float(price) / (float(weight) / 1000), 2) if price else None
 
-    def use(self, spool_id: int, grams: float) -> bool:
-        """Odečte gramy z cívky; záporná hodnota je vrátí (oprava přeodečtení po revizi plánu)."""
+    def use(self, spool_id: int, grams: float) -> bool | str:
+        """Odečte gramy z cívky; záporná hodnota je vrátí (oprava přeodečtení po revizi plánu).
+
+        Vrátí True (zapsáno), False (nepovedlo se – zkusit znovu, až Spoolman půjde) nebo GONE:
+        cívka ve Spoolmanu není (404, smazaná). Tu volající považuje za vyřízenou, jinak by fronta
+        doúčtování zkoušela totéž každých 5 minut navždy.
+
+        Vratka jde přes PUT /use se záporným use_weight: Spoolman 0.26.1 ho přičte k used_weight
+        jedním atomickým UPDATE a výsledek ořízne na 0. Dřívější GET + PATCH remaining_weight
+        u přečerpané cívky (used > initial, remaining oříznuté na 0) přebytek zahodil – #10 used
+        1185,4 / initial 1000 po vratce 21,3 g skončila na 978,7 místo 1164,1. Jen když záporné
+        use_weight neprojde validací (jiná verze Spoolmanu), vratka se zapíše přes PATCH used_weight.
+        """
         if abs(grams) < 0.05:
             return True
         try:
-            if grams > 0:
+            try:
                 self._req(f"/spool/{spool_id}/use", "PUT", {"use_weight": round(grams, 2)})
-            else:   # /use neumí záporné hodnoty → navýšit remaining_weight přímo
+            except urllib.error.HTTPError as e:
+                if grams > 0 or e.code not in VRATKA_FALLBACK_HTTP:
+                    raise
                 sp = self._req(f"/spool/{spool_id}")
-                self._req(f"/spool/{spool_id}", "PATCH", {"remaining_weight": round((sp.get("remaining_weight") or 0) - grams, 2)})
+                self._req(f"/spool/{spool_id}", "PATCH", {"used_weight": round(max(0.0, self.used_g(sp) + grams), 2)})
             LOG.info("Spoolman: cívka %s %s%.1f g", spool_id, "−" if grams > 0 else "+", abs(grams))
             return True
+        except urllib.error.HTTPError as e:
+            if e.code == 404:          # ERROR s kontextem tisku zapíše resolver (jednou)
+                LOG.warning("Spoolman: cívka %s neexistuje (404) – %s %.1f g nemá kam jít", spool_id,
+                            "odečet" if grams > 0 else "vratka", abs(grams))
+                return GONE
+            LOG.warning("Spoolman use selhal (cívka %s): %s", spool_id, e)
+            return False
         except (urllib.error.URLError, OSError, ValueError) as e:
             LOG.warning("Spoolman use selhal (cívka %s): %s", spool_id, e)
             return False
